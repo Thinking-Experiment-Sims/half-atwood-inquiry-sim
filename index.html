@@ -3,194 +3,225 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>Newton's 2nd Law: Cart + Friction Pad Simulation</title>
+    <title>Half-Atwood Discovery Simulation | The Thinking Experiment</title>
+    <link rel="icon" type="image/png" sizes="32x32" href="https://vladimirlopez.github.io/the-thinking-experiment/assets/favicon-32.png" />
+    <link rel="icon" type="image/png" sizes="16x16" href="https://vladimirlopez.github.io/the-thinking-experiment/assets/favicon-16.png" />
     <link rel="stylesheet" href="./styles.css" />
   </head>
   <body>
-    <div class="page-shell">
-      <header class="hero card">
-        <p class="eyebrow">Physics Lab Practice</p>
-        <h1>Developing Newton's 2nd Law with a Half Atwood Model</h1>
-        <p>
-          Part 1 uses a cart only. Part 2 uses a cart + friction pad. Collect graph-based measurements,
-          build force-vs-acceleration fits, and export your work.
+    <div class="bg-grid" aria-hidden="true"></div>
+
+    <div class="shell">
+      <header class="hero">
+        <p class="kicker">On-Level Physics | Unit 6 Unbalanced Forces</p>
+        <h1>Half-Atwood Machine Discovery Simulation</h1>
+        <p class="subtitle">
+          Investigate how a hanging mass pulls a block on a table, and how friction can stop or slow the system.
+          Use it to build force diagrams, predict acceleration, and test claims before solving packet and exam-style problems.
         </p>
       </header>
-
-      <section class="card machine-centerpiece">
-        <div class="graph-toolbar">
-          <h2>Half Atwood Machine View (Primary)</h2>
-          <button id="machinePlayButton">Play</button>
-        </div>
-        <canvas id="machineCanvas" class="machine-canvas" width="960" height="320"></canvas>
-        <div class="machine-scrub">
-          <label for="machineTimeSlider">Timeline</label>
-          <input id="machineTimeSlider" type="range" min="0" max="4.5" value="0" step="0.01" />
-        </div>
-        <div class="machine-readout">
-          <p><strong>Scenario:</strong> <span id="machineScenarioValue">--</span></p>
-          <p><strong>Time:</strong> <span id="machineTimeValue">0.00 s</span></p>
-          <p><strong>Phase:</strong> <span id="machinePhaseValue">--</span></p>
-          <p><strong>Force Sensor:</strong> <span id="machineForceValue">-- N</span></p>
-          <p><strong>Cart Velocity:</strong> <span id="machineVelocityValue">-- m/s</span></p>
-        </div>
+      <section class="top-row">
+        <button id="themeToggle" type="button" class="theme-toggle">Dark mode</button>
       </section>
 
-      <main class="layout">
-        <section class="card controls">
-          <h2>Lab Controls</h2>
+      <main class="app-layout" aria-label="Half-Atwood simulation interface">
+        <section class="panel narrow controls-panel">
+          <h2>Controls</h2>
+          <p class="hint">Positive direction: block right, hanging mass down.</p>
 
-          <div class="control-grid">
+          <div class="controls-grid">
             <label>
-              Scenario
-              <select id="scenarioSelect">
-                <option value="cart_only">Cart Only</option>
-                <option value="cart_plus_pad">Cart + Friction Pad</option>
-              </select>
+              Table Mass (mₜ), kg
+              <input id="massTable" type="number" min="0.2" max="2500" step="0.1" value="2.5" />
             </label>
 
             <label>
-              Teacher Preset
-              <select id="presetSelect"></select>
+              Hanging Mass (mₕ), kg
+              <input id="massHanging" type="number" min="0.1" max="500" step="0.1" value="1.2" />
             </label>
 
             <label>
-              Hanging Mass
-              <select id="hangingMassSelect"></select>
+              Target Distance (m)
+              <input id="targetDistance" type="number" min="0.1" max="12" step="0.1" value="2.0" />
             </label>
           </div>
 
-          <div class="toggle-row">
-            <label class="toggle">
-              <input id="noiseCheckbox" type="checkbox" />
-              Realistic sensor noise
+          <label class="range-label">
+            Initial Velocity v₀: <span id="initialVelocityValue">0.00 m/s</span>
+            <input id="initialVelocity" type="range" min="-4" max="4" step="0.05" value="0" />
+          </label>
+
+          <div class="toggle-group">
+            <label class="toggle-line">
+              <input id="frictionEnabled" type="checkbox" checked />
+              Include table friction
             </label>
-            <label class="toggle">
-              <input id="showFbdCheckbox" type="checkbox" checked />
-              Show force diagram
+
+            <label class="range-label">
+              Coefficient μ: <span id="muValue">0.20</span>
+              <input id="mu" type="range" min="0" max="1" step="0.01" value="0.2" />
+            </label>
+
+            <label class="toggle-line">
+              <input id="showForces" type="checkbox" checked />
+              Show force arrows
             </label>
           </div>
 
-          <div class="action-row">
-            <button id="runTrialButton" class="primary">Run Trial</button>
-            <button id="addTrialButton">Add to Table</button>
-            <button id="clearTrialsButton">Clear Table</button>
+          <div class="button-row">
+            <button id="startBtn" class="primary" type="button">Start</button>
+            <button id="pauseBtn" type="button">Pause</button>
+            <button id="resetBtn" type="button">Reset</button>
+            <button id="recordBtn" type="button">Record Trial</button>
+            <button id="clearBtn" type="button">Clear Table</button>
           </div>
 
-          <div class="action-row">
-            <button id="exportCsvButton">Export CSV</button>
-            <button id="exportPngButton">Export Graph PNG</button>
-          </div>
+          <p id="statusText" class="status" aria-live="polite"></p>
 
-          <p id="statusText" class="status" data-tone="ok" aria-live="polite"></p>
-
-          <h3>Scaffolded Checklist</h3>
-          <ul class="checklist">
-            <li id="stepSetup">Choose scenario, preset, and hanging mass. <span>Pending</span></li>
-            <li id="stepRun">Run one trial. <span>Pending</span></li>
-            <li id="stepForceWindow">Select force window. <span>Pending</span></li>
-            <li id="stepVelocityWindow">Select velocity window. <span>Pending</span></li>
-            <li id="stepAdd">Add at least one accepted trial. <span>Pending</span></li>
-            <li id="stepFit">Collect 2+ trials for fit. <span>Pending</span></li>
-            <li id="stepExport">Export data or graph. <span>Pending</span></li>
-          </ul>
-
-          <div class="split-panels">
-            <div>
-              <h3>Preset Details</h3>
-              <ul id="presetDetails" class="mini-list"></ul>
-            </div>
-            <div>
-              <h3>Current Trial</h3>
-              <ul id="currentTrialSummary" class="mini-list"></ul>
+          <div class="preset-box">
+            <h3>Quick Scenarios</h3>
+            <div class="button-row compact">
+              <button data-preset="baseline" class="ghost" type="button">Frictionless Baseline</button>
+              <button data-preset="packet" class="ghost" type="button">Packet Style</button>
+              <button data-preset="cliff" class="ghost" type="button">Car + Rock Analog</button>
             </div>
           </div>
+        </section>
 
-          <div class="metrics">
-            <article class="metric-card">
-              <h4>Force Selection</h4>
-              <p id="forceSelectionLabel">No window selected</p>
-              <p class="metric-value"><span id="forceMeanValue">--</span> N (mean)</p>
-            </article>
-            <article class="metric-card">
-              <h4>Velocity Selection</h4>
-              <p id="velocitySelectionLabel">No window selected</p>
-              <p class="metric-value"><span id="accelValue">--</span> m/s^2 (slope)</p>
-            </article>
+        <section class="panel wide visual-panel">
+          <div class="panel-head">
+            <h2>Half-Atwood View</h2>
+            <p class="info-line">Track rope motion, velocity direction, and friction effects in real time.</p>
           </div>
 
-          <h3>Accepted Trials</h3>
+          <canvas
+            id="simCanvas"
+            class="sim-canvas sim-view"
+            width="980"
+            height="520"
+            role="img"
+            aria-label="Half-Atwood machine with a block on a table connected over a pulley to a hanging mass"
+          ></canvas>
+
+          <dl class="metrics-grid" aria-label="Live simulation readouts">
+            <div>
+              <dt>Acceleration (instant)</dt>
+              <dd id="accelReadout">--</dd>
+            </div>
+            <div>
+              <dt>Acceleration (from rest)</dt>
+              <dd id="restAccelReadout">--</dd>
+            </div>
+            <div>
+              <dt>Tension</dt>
+              <dd id="tensionReadout">--</dd>
+            </div>
+            <div>
+              <dt>Friction Force</dt>
+              <dd id="frictionReadout">--</dd>
+            </div>
+            <div>
+              <dt>Net Force</dt>
+              <dd id="netReadout">--</dd>
+            </div>
+            <div>
+              <dt>Velocity</dt>
+              <dd id="velocityReadout">--</dd>
+            </div>
+            <div>
+              <dt>Displacement</dt>
+              <dd id="displacementReadout">--</dd>
+            </div>
+            <div>
+              <dt>Time</dt>
+              <dd id="timeReadout">--</dd>
+            </div>
+            <div>
+              <dt>Predicted Time to Target</dt>
+              <dd id="targetTimeReadout">--</dd>
+            </div>
+          </dl>
+        </section>
+
+        <section class="panel full">
+          <div class="tab-nav" role="tablist" aria-label="Instruction tabs">
+            <button id="discoveryTabBtn" class="tab-btn active" type="button" data-tab="discovery" role="tab" aria-selected="true">Guided Discovery</button>
+            <button id="theoryTabBtn" class="tab-btn" type="button" data-tab="theory" role="tab" aria-selected="false">Theory Concepts</button>
+          </div>
+
+          <div id="discoveryTab" class="tab-panel active" role="tabpanel" aria-labelledby="discoveryTabBtn">
+            <h2>Discovery Prompts (Aligned to Unit 6)</h2>
+            <details open>
+              <summary>1) Start frictionless to build your reference model</summary>
+              <p>Set friction OFF, start from rest, and compare your measured acceleration to your equation for a two-mass system.</p>
+              <p>Question: How does increasing mₕ change acceleration when mₜ stays fixed?</p>
+            </details>
+            <details>
+              <summary>2) Add friction and find when motion stops</summary>
+              <p>Turn friction ON and slowly increase μ while masses stay fixed.</p>
+              <p>Question: At what point does static friction hold the system at rest? Explain with net-force reasoning.</p>
+            </details>
+            <details>
+              <summary>3) Try a packet-style context</summary>
+              <p>Use <strong>Packet Style</strong> preset, then estimate time to move 2.0 m from rest and compare with the simulation.</p>
+              <p>Question: Which force changed from the frictionless run, and how did that change acceleration?</p>
+            </details>
+            <details>
+              <summary>4) Analyze an exam-style claim</summary>
+              <p>Give the system an initial velocity opposite the acceleration direction.</p>
+              <p>Question: Can velocity and acceleration point opposite ways at the same time? Use evidence from the run.</p>
+            </details>
+          </div>
+
+          <div id="theoryTab" class="tab-panel" role="tabpanel" aria-labelledby="theoryTabBtn">
+            <h2>Half-Atwood Model Used Here</h2>
+            <p>Sign convention: right/down is positive.</p>
+            <p>
+              Treat both masses together as one system. The motion of the system depends on the
+              net external force compared to the total mass of the system.
+            </p>
+            <p>
+              Friction changes the net external force on the system. When friction is large enough,
+              the system can stay at rest.
+            </p>
+            <p>
+              Use the simulation to identify which forces are external to the full two-object system,
+              then connect your observations to acceleration.
+            </p>
+            <p class="hint">Gravity is fixed at 10 m/s² to match your Unit 6 exam convention.</p>
+          </div>
+        </section>
+
+        <section class="panel full">
+          <div class="panel-head">
+            <h2>Recorded Trials</h2>
+            <p class="info-line">Capture runs to compare frictionless and friction cases during class discussion.</p>
+          </div>
           <div class="table-wrap">
             <table>
               <thead>
                 <tr>
-                  <th>ID</th>
-                  <th>Scenario</th>
-                  <th>Mass (kg)</th>
-                  <th>Force (N)</th>
-                  <th>Accel (m/s^2)</th>
-                  <th>Force Window (s)</th>
-                  <th>Vel Window (s)</th>
-                  <th>Action</th>
+                  <th>#</th>
+                  <th>mₜ (kg)</th>
+                  <th>mₕ (kg)</th>
+                  <th>μ</th>
+                  <th>a from rest (m/s²)</th>
+                  <th>T (N)</th>
+                  <th>Time to target (s)</th>
+                  <th>Result</th>
                 </tr>
               </thead>
-              <tbody id="dataTableBody">
+              <tbody id="trialTableBody">
                 <tr>
-                  <td colspan="8">No accepted trials yet.</td>
+                  <td colspan="8">No trials yet.</td>
                 </tr>
               </tbody>
             </table>
           </div>
         </section>
-
-        <section class="graphs-column">
-          <article class="card graph-card">
-            <div class="graph-toolbar">
-              <h3>Force-Time Graph</h3>
-              <div class="nudge-controls" aria-label="Force graph keyboard nudge controls">
-                <button class="nudge-btn" data-graph="force" data-boundary="start" data-dir="-1" data-step="0.02">Start -</button>
-                <button class="nudge-btn" data-graph="force" data-boundary="start" data-dir="1" data-step="0.02">Start +</button>
-                <button class="nudge-btn" data-graph="force" data-boundary="end" data-dir="-1" data-step="0.02">End -</button>
-                <button class="nudge-btn" data-graph="force" data-boundary="end" data-dir="1" data-step="0.02">End +</button>
-              </div>
-            </div>
-            <canvas id="forceCanvas" class="graph" width="960" height="360"></canvas>
-            <p class="graph-help">Tip: Drag across the graph to choose the averaging interval. Keyboard: Shift+Arrow adjusts start, Arrow adjusts end.</p>
-          </article>
-
-          <article class="card graph-card">
-            <div class="graph-toolbar">
-              <h3>Velocity-Time Graph</h3>
-              <div class="nudge-controls" aria-label="Velocity graph keyboard nudge controls">
-                <button class="nudge-btn" data-graph="velocity" data-boundary="start" data-dir="-1" data-step="0.02">Start -</button>
-                <button class="nudge-btn" data-graph="velocity" data-boundary="start" data-dir="1" data-step="0.02">Start +</button>
-                <button class="nudge-btn" data-graph="velocity" data-boundary="end" data-dir="-1" data-step="0.02">End -</button>
-                <button class="nudge-btn" data-graph="velocity" data-boundary="end" data-dir="1" data-step="0.02">End +</button>
-              </div>
-            </div>
-            <canvas id="velocityCanvas" class="graph" width="960" height="360"></canvas>
-            <p class="graph-help">Fit a line to the selected interval to estimate acceleration.</p>
-          </article>
-
-          <article class="card graph-card">
-            <h3>Force vs Acceleration</h3>
-            <canvas id="fitCanvas" class="graph" width="960" height="360"></canvas>
-            <p id="fitEquation" class="fit-eq">Need at least 2 accepted trials for a linear fit.</p>
-            <p id="fitQuality" class="fit-q">R^2: --</p>
-            <ul id="fitInterpretation" class="mini-list">
-              <li>Collect accepted trials to display slope/intercept interpretations.</li>
-            </ul>
-          </article>
-
-          <article id="fbdPanel" class="card graph-card">
-            <h3>Free-Body Diagram</h3>
-            <div id="fbdFigure" class="fbd-figure"></div>
-            <p class="graph-help">Use this as a model while creating your own force diagrams for lab write-up figures.</p>
-          </article>
-        </section>
       </main>
     </div>
 
-    <script type="module" src="./src/app.js?v=20260204b"></script>
+    <script type="module" src="./src/halfAtwoodApp.js"></script>
   </body>
 </html>

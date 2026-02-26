@@ -1,820 +1,718 @@
-import { ScatterFitGraph, TimeSeriesGraph } from "./graphs.js";
-import { HalfAtwoodView } from "./machineView.js";
-import { exportGraphsSnapshot, exportTrialDataCsv } from "./export.js";
-import { computeTrialPhysics, getScenarioConfig } from "./physics.js";
-import { PRESETS, HANGING_MASS_STEPS_KG, getPresetById, scenarioTitle } from "./presets.js";
-import { linearRegression, linearRegressionInWindow, mean, sliceWindow } from "./regression.js";
-import { generateTrialSignals } from "./signals.js";
-import { createStore } from "./state.js";
+import {
+  firstHarmonicAirLengthM,
+  inferredSpeedMps,
+  qualityBand,
+  resonanceStrength,
+  speedOfSoundFromTemp
+} from "./resonancePhysics.js";
 
-const MIN_SELECTION_WIDTH_S = 0.12;
-const MIN_POINTS = 6;
+const FORK_FREQUENCIES_HZ = [256, 288, 320, 341, 384, 426, 480, 512, 640, 768];
+const AIR_LENGTH_MIN_M = 0.08;
+const AIR_LENGTH_MAX_M = 0.95;
+const PIPE_STEP_M = 0.004;
+const TUBE_DIAMETER_M = 0.04;
+const ROOM_TEMP_C = 20;
+const REFERENCE_SPEED_MPS = speedOfSoundFromTemp(ROOM_TEMP_C);
+const TARGET_MAX_THRESHOLD = 0.985;
+const MEASUREMENT_NOISE_M = 0.0015;
 
 /**
- * @param {"cart_only" | "cart_plus_pad"} scenario
- * @returns {typeof PRESETS}
+ * @param {number} value
+ * @param {number} min
+ * @param {number} max
+ * @returns {number}
  */
-function availablePresets(scenario) {
-  if (scenario === "cart_only") {
-    return PRESETS.filter((preset) => preset.id === "low");
-  }
-
-  return PRESETS;
+function clamp(value, min, max) {
+  return Math.min(max, Math.max(min, value));
 }
 
 /**
  * @param {number} value
  * @param {number} digits
- * @returns {number}
- */
-function roundTo(value, digits = 3) {
-  const factor = 10 ** digits;
-  return Math.round(value * factor) / factor;
-}
-
-/**
- * @param {number|null} value
- * @param {number} digits
  * @returns {string}
  */
-function formatNumber(value, digits = 3) {
-  return value === null || Number.isNaN(value) ? "--" : value.toFixed(digits);
+function format(value, digits = 3) {
+  return Number.isFinite(value) ? value.toFixed(digits) : "--";
 }
 
 /**
- * @param {{startS: number, endS: number}|null} selection
- * @returns {boolean}
+ * @param {HTMLCanvasElement} canvas
  */
-function isValidSelection(selection) {
-  if (!selection) {
-    return false;
+function resizeCanvasToDisplaySize(canvas) {
+  const ratio = window.devicePixelRatio || 1;
+  const width = Math.floor(canvas.clientWidth * ratio);
+  const height = Math.floor(canvas.clientHeight * ratio);
+  if (canvas.width !== width || canvas.height !== height) {
+    canvas.width = width;
+    canvas.height = height;
+  }
+}
+
+class ResonanceAudio {
+  constructor() {
+    this.context = null;
+    this.fundamentalOsc = null;
+    this.overtoneOsc = null;
+    this.vibratoOsc = null;
+    this.vibratoGain = null;
+    this.masterGain = null;
+
+    this.enabled = false;
+    this.frequencyHz = 384;
+    this.strength = 0;
   }
 
-  return Math.abs(selection.endS - selection.startS) >= MIN_SELECTION_WIDTH_S;
-}
+  async ensureNodes() {
+    const AudioContextCtor = window.AudioContext || window.webkitAudioContext;
+    if (!AudioContextCtor) {
+      return false;
+    }
 
-/**
- * @param {{startS: number, endS: number}} selection
- * @returns {{startS: number, endS: number}}
- */
-function normalize(selection) {
-  return {
-    startS: Math.min(selection.startS, selection.endS),
-    endS: Math.max(selection.startS, selection.endS)
-  };
-}
+    if (!this.context) {
+      this.context = new AudioContextCtor();
 
-const store = createStore();
+      this.masterGain = this.context.createGain();
+      this.masterGain.gain.value = 0;
+      this.masterGain.connect(this.context.destination);
+
+      this.fundamentalOsc = this.context.createOscillator();
+      this.fundamentalOsc.type = "sine";
+
+      this.overtoneOsc = this.context.createOscillator();
+      this.overtoneOsc.type = "triangle";
+
+      this.vibratoOsc = this.context.createOscillator();
+      this.vibratoOsc.type = "sine";
+      this.vibratoOsc.frequency.value = 5;
+
+      this.vibratoGain = this.context.createGain();
+      this.vibratoGain.gain.value = 2.2;
+
+      this.fundamentalOsc.frequency.value = this.frequencyHz;
+      this.overtoneOsc.frequency.value = this.frequencyHz * 2;
+
+      this.vibratoOsc.connect(this.vibratoGain);
+      this.vibratoGain.connect(this.fundamentalOsc.frequency);
+
+      const overtoneMix = this.context.createGain();
+      overtoneMix.gain.value = 0.16;
+      this.overtoneOsc.connect(overtoneMix);
+      overtoneMix.connect(this.masterGain);
+      this.fundamentalOsc.connect(this.masterGain);
+
+      this.fundamentalOsc.start();
+      this.overtoneOsc.start();
+      this.vibratoOsc.start();
+    }
+
+    if (this.context.state === "suspended") {
+      await this.context.resume();
+    }
+
+    return true;
+  }
+
+  async setEnabled(enabled) {
+    if (enabled) {
+      const ready = await this.ensureNodes();
+      if (!ready) {
+        return false;
+      }
+    }
+
+    this.enabled = enabled;
+    this.apply();
+    return true;
+  }
+
+  /**
+   * @param {number} frequencyHz
+   * @param {number} strength
+   */
+  setSignal(frequencyHz, strength) {
+    this.frequencyHz = frequencyHz;
+    this.strength = clamp(strength, 0, 1);
+
+    if (!this.context || !this.fundamentalOsc || !this.overtoneOsc || !this.vibratoGain) {
+      return;
+    }
+
+    const now = this.context.currentTime;
+    this.fundamentalOsc.frequency.setTargetAtTime(this.frequencyHz, now, 0.03);
+    this.overtoneOsc.frequency.setTargetAtTime(this.frequencyHz * 2, now, 0.03);
+    this.vibratoGain.gain.setTargetAtTime(1.4 + this.strength * 2.2, now, 0.08);
+    this.apply();
+  }
+
+  apply() {
+    if (!this.context || !this.masterGain) {
+      return;
+    }
+
+    const now = this.context.currentTime;
+    const loudness = this.enabled ? 0.003 + 0.2 * this.strength ** 1.8 : 0;
+    this.masterGain.gain.cancelScheduledValues(now);
+    this.masterGain.gain.setTargetAtTime(loudness, now, 0.05);
+  }
+}
 
 const elements = {
-  scenarioSelect: document.querySelector("#scenarioSelect"),
-  presetSelect: document.querySelector("#presetSelect"),
-  hangingMassSelect: document.querySelector("#hangingMassSelect"),
-  noiseCheckbox: document.querySelector("#noiseCheckbox"),
-  showFbdCheckbox: document.querySelector("#showFbdCheckbox"),
-  runTrialButton: document.querySelector("#runTrialButton"),
-  addTrialButton: document.querySelector("#addTrialButton"),
-  clearTrialsButton: document.querySelector("#clearTrialsButton"),
-  exportCsvButton: document.querySelector("#exportCsvButton"),
-  exportPngButton: document.querySelector("#exportPngButton"),
+  frequencySelect: /** @type {HTMLSelectElement} */ (document.querySelector("#frequencySelect")),
+  frequencySlider: /** @type {HTMLInputElement} */ (document.querySelector("#frequencySlider")),
+  frequencyValue: document.querySelector("#frequencyValue"),
+  airLengthSlider: /** @type {HTMLInputElement} */ (document.querySelector("#airLengthSlider")),
+  airLengthValue: document.querySelector("#airLengthValue"),
+  pipeUpButton: /** @type {HTMLButtonElement} */ (document.querySelector("#pipeUpButton")),
+  pipeDownButton: /** @type {HTMLButtonElement} */ (document.querySelector("#pipeDownButton")),
+  predictionInput: /** @type {HTMLInputElement} */ (document.querySelector("#predictionInput")),
+  predictionFeedback: document.querySelector("#predictionFeedback"),
+  hintToggle: /** @type {HTMLInputElement} */ (document.querySelector("#hintToggle")),
+  toneButton: /** @type {HTMLButtonElement} */ (document.querySelector("#toneButton")),
+  recordButton: /** @type {HTMLButtonElement} */ (document.querySelector("#recordButton")),
+  clearButton: /** @type {HTMLButtonElement} */ (document.querySelector("#clearButton")),
   statusText: document.querySelector("#statusText"),
-  presetDetails: document.querySelector("#presetDetails"),
-  currentTrialSummary: document.querySelector("#currentTrialSummary"),
-  forceSelectionLabel: document.querySelector("#forceSelectionLabel"),
-  velocitySelectionLabel: document.querySelector("#velocitySelectionLabel"),
-  forceMeanValue: document.querySelector("#forceMeanValue"),
-  accelValue: document.querySelector("#accelValue"),
-  dataTableBody: document.querySelector("#dataTableBody"),
-  fitEquation: document.querySelector("#fitEquation"),
-  fitQuality: document.querySelector("#fitQuality"),
-  fitInterpretation: document.querySelector("#fitInterpretation"),
-  checklistItems: {
-    setup: document.querySelector("#stepSetup"),
-    run: document.querySelector("#stepRun"),
-    forceWindow: document.querySelector("#stepForceWindow"),
-    velocityWindow: document.querySelector("#stepVelocityWindow"),
-    add: document.querySelector("#stepAdd"),
-    fit: document.querySelector("#stepFit"),
-    export: document.querySelector("#stepExport")
-  },
-  fbdPanel: document.querySelector("#fbdPanel"),
-  fbdFigure: document.querySelector("#fbdFigure"),
-  machineCanvas: document.querySelector("#machineCanvas"),
-  machinePlayButton: document.querySelector("#machinePlayButton"),
-  machineTimeSlider: document.querySelector("#machineTimeSlider"),
-  machineTimeValue: document.querySelector("#machineTimeValue"),
-  machinePhaseValue: document.querySelector("#machinePhaseValue"),
-  machineForceValue: document.querySelector("#machineForceValue"),
-  machineVelocityValue: document.querySelector("#machineVelocityValue"),
-  machineScenarioValue: document.querySelector("#machineScenarioValue")
+  loudnessFill: document.querySelector("#loudnessFill"),
+  loudnessLabel: document.querySelector("#loudnessLabel"),
+  forkReadout: document.querySelector("#forkReadout"),
+  lengthReadout: document.querySelector("#lengthReadout"),
+  targetReadout: document.querySelector("#targetReadout"),
+  speedReadout: document.querySelector("#speedReadout"),
+  trialTableBody: document.querySelector("#trialTableBody"),
+  acceptedCount: document.querySelector("#acceptedCount"),
+  meanSpeed: document.querySelector("#meanSpeed"),
+  percentError: document.querySelector("#percentError"),
+  stepPredict: document.querySelector("#stepPredict"),
+  stepTone: document.querySelector("#stepTone"),
+  stepMax: document.querySelector("#stepMax"),
+  stepTrials: document.querySelector("#stepTrials"),
+  tubeCanvas: /** @type {HTMLCanvasElement} */ (document.querySelector("#tubeCanvas"))
 };
 
-const forceGraph = new TimeSeriesGraph({
-  canvas: /** @type {HTMLCanvasElement} */ (document.querySelector("#forceCanvas")),
-  title: "Force vs Time",
-  yLabel: "Force (N)",
-  onSelectionChange(selection) {
-    store.update((state) => ({
-      ...state,
-      measurement: {
-        ...state.measurement,
-        forceWindow: selection
-      }
-    }));
-    updateMeasurementValues();
-  }
-});
+const state = {
+  frequencyHz: 384,
+  airLengthM: 0.23,
+  predictionM: null,
+  hintsEnabled: false,
+  toneEnabled: false,
+  toneStarted: false,
+  foundMaximum: false,
+  transientStatus: /** @type {{message:string, tone:"default"|"warn"}|null} */ (null),
+  records: /** @type {Array<{id:number, frequencyHz:number, lengthM:number, speedMps:number, accepted:boolean, qualityLabel:string, qualityCss:"good"|"ok"|"low"}>} */ ([]),
+  nextRecordId: 1
+};
 
-const velocityGraph = new TimeSeriesGraph({
-  canvas: /** @type {HTMLCanvasElement} */ (document.querySelector("#velocityCanvas")),
-  title: "Velocity vs Time",
-  yLabel: "Velocity (m/s)",
-  onSelectionChange(selection) {
-    store.update((state) => ({
-      ...state,
-      measurement: {
-        ...state.measurement,
-        velocityWindow: selection
-      }
-    }));
-    updateMeasurementValues();
-  }
-});
+const audio = new ResonanceAudio();
+const tubeContext = elements.tubeCanvas.getContext("2d");
+let statusTimeoutId = null;
 
-const fitGraph = new ScatterFitGraph({
-  canvas: /** @type {HTMLCanvasElement} */ (document.querySelector("#fitCanvas")),
-  title: "Force vs Acceleration"
-});
+function buildFrequencyOptions() {
+  elements.frequencySelect.innerHTML = "";
 
-const machineView = new HalfAtwoodView({
-  canvas: /** @type {HTMLCanvasElement} */ (elements.machineCanvas),
-  playButton: /** @type {HTMLButtonElement} */ (elements.machinePlayButton),
-  timeSlider: /** @type {HTMLInputElement} */ (elements.machineTimeSlider),
-  timeValue: elements.machineTimeValue,
-  phaseValue: elements.machinePhaseValue,
-  forceValue: elements.machineForceValue,
-  velocityValue: elements.machineVelocityValue,
-  scenarioValue: elements.machineScenarioValue,
-  onTimeUpdate(timeS, trial) {
-    renderTrialProgress(timeS, trial);
-  }
-});
-
-function hydrateSelectors() {
-  hydratePresetSelect("cart_only", "low");
-
-  for (const mass of HANGING_MASS_STEPS_KG) {
+  for (const freq of FORK_FREQUENCIES_HZ) {
     const option = document.createElement("option");
-    option.value = String(mass);
-    option.textContent = `${mass.toFixed(2)} kg`;
-    elements.hangingMassSelect.append(option);
-  }
-}
-
-/**
- * @param {"cart_only" | "cart_plus_pad"} scenario
- * @param {string} selectedPresetId
- */
-function hydratePresetSelect(scenario, selectedPresetId) {
-  elements.presetSelect.innerHTML = "";
-
-  const options = availablePresets(scenario);
-  for (const preset of options) {
-    const option = document.createElement("option");
-    option.value = preset.id;
-    option.textContent = scenario === "cart_only"
-      ? `${preset.label} (fixed)`
-      : preset.label;
-    elements.presetSelect.append(option);
+    option.value = String(freq);
+    option.textContent = `${freq} Hz`;
+    elements.frequencySelect.append(option);
   }
 
-  const validSelection = options.some((preset) => preset.id === selectedPresetId)
-    ? selectedPresetId
-    : options[0].id;
-
-  elements.presetSelect.value = validSelection;
-  elements.presetSelect.disabled = scenario === "cart_only";
-}
-
-/**
- * @param {number} timeS
- * @param {import("./state.js").CurrentTrial | null} trial
- */
-function renderTrialProgress(timeS, trial) {
-  if (!trial) {
-    forceGraph.setData({
-      timesS: [],
-      values: [],
-      motionWindow: null,
-      selection: store.getState().measurement.forceWindow
-    });
-    velocityGraph.setData({
-      timesS: [],
-      values: [],
-      motionWindow: null,
-      selection: store.getState().measurement.velocityWindow
-    });
-    return;
-  }
-
-  const times = trial.signals.timesS;
-  let maxIndex = 0;
-  while (maxIndex < times.length - 1 && times[maxIndex + 1] <= timeS) {
-    maxIndex += 1;
-  }
-
-  const visibleTimes = times.slice(0, maxIndex + 1);
-  const visibleForce = trial.signals.forceN.slice(0, maxIndex + 1);
-  const visibleVelocity = trial.signals.velocityMps.slice(0, maxIndex + 1);
-  const motionWindow = trial.signals.motionWindow
-    ? {
-      startS: trial.signals.motionWindow.startS,
-      endS: Math.min(timeS, trial.signals.motionWindow.endS)
-    }
-    : null;
-
-  const state = store.getState();
-  forceGraph.setData({
-    timesS: visibleTimes,
-    values: visibleForce,
-    motionWindow: motionWindow && motionWindow.endS > motionWindow.startS ? motionWindow : null,
-    selection: state.measurement.forceWindow
-  });
-  velocityGraph.setData({
-    timesS: visibleTimes,
-    values: visibleVelocity,
-    motionWindow: motionWindow && motionWindow.endS > motionWindow.startS ? motionWindow : null,
-    selection: state.measurement.velocityWindow
-  });
-}
-
-function bindEvents() {
-  elements.scenarioSelect.addEventListener("change", () => {
-    const scenario = /** @type {"cart_only" | "cart_plus_pad"} */ (elements.scenarioSelect.value);
-    const options = availablePresets(scenario);
-    const state = store.getState();
-    const nextPresetId = options.some((preset) => preset.id === state.presetId)
-      ? state.presetId
-      : options[0].id;
-    const nextPreset = getPresetById(nextPresetId);
-
-    hydratePresetSelect(scenario, nextPresetId);
-    store.setState({
-      scenario,
-      presetId: nextPresetId,
-      noiseEnabled: nextPreset.noiseDefault
-    });
-    renderFitView();
-    renderFbd();
-  });
-
-  elements.presetSelect.addEventListener("change", () => {
-    const preset = getPresetById(elements.presetSelect.value);
-    store.setState({
-      presetId: preset.id,
-      noiseEnabled: preset.noiseDefault
-    });
-    renderPresetDetails();
-    renderFbd();
-  });
-
-  elements.hangingMassSelect.addEventListener("change", () => {
-    store.setState({
-      hangingMassKg: Number(elements.hangingMassSelect.value)
-    });
-  });
-
-  elements.noiseCheckbox.addEventListener("change", () => {
-    store.setState({
-      noiseEnabled: elements.noiseCheckbox.checked
-    });
-  });
-
-  elements.showFbdCheckbox.addEventListener("change", () => {
-    store.setState({
-      showFbd: elements.showFbdCheckbox.checked
-    });
-    renderFbd();
-  });
-
-  elements.runTrialButton.addEventListener("click", runTrial);
-
-  elements.addTrialButton.addEventListener("click", () => {
-    const state = store.getState();
-
-    if (!state.currentTrial || !state.currentTrial.physics.moved) {
-      return;
-    }
-
-    if (state.measurement.forceMeanN === null || state.measurement.accelerationMps2 === null) {
-      return;
-    }
-
-    const forceWindow = normalize(state.measurement.forceWindow);
-    const velocityWindow = normalize(state.measurement.velocityWindow);
-    const preset = getPresetById(state.presetId);
-
-    const record = {
-      scenario: state.scenario,
-      preset: preset.label,
-      trial_id: state.currentTrial.id,
-      hanging_mass_kg: roundTo(state.currentTrial.physics.hangingMassKg, 3),
-      force_mean_N: roundTo(state.measurement.forceMeanN, 4),
-      accel_mps2: roundTo(state.measurement.accelerationMps2, 4),
-      moved: true,
-      force_window_start_s: roundTo(forceWindow.startS, 3),
-      force_window_end_s: roundTo(forceWindow.endS, 3),
-      vel_window_start_s: roundTo(velocityWindow.startS, 3),
-      vel_window_end_s: roundTo(velocityWindow.endS, 3),
-      noise_enabled: state.noiseEnabled,
-      timestamp_iso: new Date().toISOString()
-    };
-
-    store.update((previous) => ({
-      ...previous,
-      trialRecords: [...previous.trialRecords, record]
-    }));
-
-    setStatus("Trial added. Keep going to build your force-vs-acceleration trend line.", "ok");
-  });
-
-  elements.clearTrialsButton.addEventListener("click", () => {
-    store.update((state) => ({
-      ...state,
-      trialRecords: []
-    }));
-
-    setStatus("Cleared recorded trials.", "ok");
-  });
-
-  elements.exportCsvButton.addEventListener("click", () => {
-    const { trialRecords } = store.getState();
-
-    if (!trialRecords.length) {
-      setStatus("No data yet. Add at least one trial before exporting CSV.", "warn");
-      return;
-    }
-
-    exportTrialDataCsv(trialRecords);
-    setStatus("CSV export complete.", "ok");
-  });
-
-  elements.exportPngButton.addEventListener("click", async () => {
-    const state = store.getState();
-
-    if (!state.currentTrial) {
-      setStatus("Run a trial first so there is graph data to export.", "warn");
-      return;
-    }
-
-    await exportGraphsSnapshot({
-      forceCanvas: forceGraph.getCanvas(),
-      velocityCanvas: velocityGraph.getCanvas(),
-      fitCanvas: fitGraph.getCanvas()
-    });
-
-    setStatus("Graph snapshot export complete.", "ok");
-  });
-
-  elements.dataTableBody.addEventListener("click", (event) => {
-    const target = /** @type {HTMLElement} */ (event.target);
-
-    if (!target.matches("button[data-trial-id]")) {
-      return;
-    }
-
-    const trialId = Number(target.dataset.trialId);
-
-    store.update((state) => ({
-      ...state,
-      trialRecords: state.trialRecords.filter((record) => record.trial_id !== trialId)
-    }));
-
-    setStatus(`Removed trial ${trialId}.`, "ok");
-  });
-
-  document.querySelectorAll(".nudge-btn").forEach((button) => {
-    button.addEventListener("click", () => {
-      const graphId = button.dataset.graph;
-      const boundary = /** @type {"start" | "end"} */ (button.dataset.boundary);
-      const direction = Number(button.dataset.dir);
-      const delta = Number(button.dataset.step) * direction;
-
-      if (graphId === "force") {
-        forceGraph.nudgeSelection(boundary, delta);
-      } else {
-        velocityGraph.nudgeSelection(boundary, delta);
-      }
-    });
-  });
-}
-
-function runTrial() {
-  const state = store.getState();
-
-  const physics = computeTrialPhysics({
-    scenario: state.scenario,
-    presetId: state.presetId,
-    hangingMassKg: state.hangingMassKg
-  });
-
-  const seed = Math.floor(
-    state.nextTrialId * 997
-      + state.hangingMassKg * 10000
-      + (state.scenario === "cart_plus_pad" ? 7000 : 2000)
-      + state.presetId.charCodeAt(0)
-  );
-
-  const signals = generateTrialSignals(physics, {
-    noiseEnabled: state.noiseEnabled,
-    seed
-  });
-
-  store.update((previous) => ({
-    ...previous,
-    currentTrial: {
-      id: previous.nextTrialId,
-      physics,
-      signals
-    },
-    nextTrialId: previous.nextTrialId + 1,
-    measurement: {
-      forceWindow: null,
-      velocityWindow: null,
-      forceMeanN: null,
-      accelerationMps2: null
-    }
-  }));
-
-  machineView.setTrial(store.getState().currentTrial);
-  machineView.startPlayback(true);
-
-  if (!physics.moved) {
-    setStatus(
-      `Trial ${store.getState().currentTrial.id}: hanging force (${physics.pullingForceN.toFixed(2)} N) is below start threshold (${physics.config.startThresholdN.toFixed(2)} N). Do not add this trial.`,
-      "warn"
-    );
-  } else {
-    setStatus(`Trial ${store.getState().currentTrial.id} ready. Click Play to generate graphs as the cart moves, then select windows.`, "ok");
-  }
-
-  renderCurrentTrialSummary();
-  updateMeasurementValues();
-  renderChecklist();
-  renderFbd();
-}
-
-function updateMeasurementValues() {
-  const state = store.getState();
-
-  if (!state.currentTrial) {
-    store.update((previous) => ({
-      ...previous,
-      measurement: {
-        ...previous.measurement,
-        forceMeanN: null,
-        accelerationMps2: null
-      }
-    }));
-
-    renderMeasurementPanel();
-    return;
-  }
-
-  const { timesS, forceN, velocityMps } = state.currentTrial.signals;
-
-  let forceMeanN = null;
-  if (isValidSelection(state.measurement.forceWindow)) {
-    const selection = normalize(state.measurement.forceWindow);
-    const selected = sliceWindow(timesS, forceN, selection.startS, selection.endS);
-
-    if (selected.values.length >= MIN_POINTS) {
-      forceMeanN = mean(selected.values);
-    }
-  }
-
-  let accelerationMps2 = null;
-  if (isValidSelection(state.measurement.velocityWindow)) {
-    const selection = normalize(state.measurement.velocityWindow);
-    const fit = linearRegressionInWindow(timesS, velocityMps, selection.startS, selection.endS);
-
-    if (fit && fit.count >= MIN_POINTS) {
-      accelerationMps2 = fit.slope;
-    }
-  }
-
-  store.update((previous) => ({
-    ...previous,
-    measurement: {
-      ...previous.measurement,
-      forceMeanN,
-      accelerationMps2
-    }
-  }));
-
-  renderMeasurementPanel();
-}
-
-function renderMeasurementPanel() {
-  const { measurement } = store.getState();
-
-  if (measurement.forceWindow) {
-    const normalized = normalize(measurement.forceWindow);
-    elements.forceSelectionLabel.textContent = `${normalized.startS.toFixed(2)} s to ${normalized.endS.toFixed(2)} s`;
-  } else {
-    elements.forceSelectionLabel.textContent = "No window selected";
-  }
-
-  if (measurement.velocityWindow) {
-    const normalized = normalize(measurement.velocityWindow);
-    elements.velocitySelectionLabel.textContent = `${normalized.startS.toFixed(2)} s to ${normalized.endS.toFixed(2)} s`;
-  } else {
-    elements.velocitySelectionLabel.textContent = "No window selected";
-  }
-
-  elements.forceMeanValue.textContent = formatNumber(measurement.forceMeanN, 3);
-  elements.accelValue.textContent = formatNumber(measurement.accelerationMps2, 3);
-
-  renderChecklist();
-  updateActionButtons();
-}
-
-function renderPresetDetails() {
-  const state = store.getState();
-  const config = getScenarioConfig({
-    scenario: state.scenario,
-    presetId: state.presetId,
-    hangingMassKg: state.hangingMassKg
-  });
-
-  elements.presetDetails.innerHTML = [
-    `<li><strong>Scenario:</strong> ${config.scenarioLabel}</li>`,
-    `<li><strong>Preset:</strong> ${config.presetLabel}</li>`,
-    `<li><strong>Cart mass:</strong> ${config.cartMassKg.toFixed(2)} kg</li>`,
-    `<li><strong>Pad mass:</strong> ${config.padMassKg.toFixed(2)} kg</li>`,
-    `<li><strong>System mass:</strong> ${config.systemMassKg.toFixed(2)} kg</li>`,
-    `<li><strong>Moving drag:</strong> ${config.dragN.toFixed(2)} N</li>`,
-    `<li><strong>Start threshold:</strong> ${config.startThresholdN.toFixed(2)} N</li>`
-  ].join("");
-}
-
-function renderCurrentTrialSummary() {
-  const state = store.getState();
-
-  if (!state.currentTrial) {
-    elements.currentTrialSummary.textContent = "No trial yet. Choose settings and click Run Trial.";
-    return;
-  }
-
-  const { physics } = state.currentTrial;
-
-  elements.currentTrialSummary.innerHTML = [
-    `<li><strong>Trial ID:</strong> ${state.currentTrial.id}</li>`,
-    `<li><strong>Hanging mass:</strong> ${physics.hangingMassKg.toFixed(2)} kg</li>`,
-    `<li><strong>Pulling force:</strong> ${physics.pullingForceN.toFixed(2)} N</li>`,
-    `<li><strong>Moved:</strong> ${physics.moved ? "Yes" : "No"}</li>`,
-    `<li><strong>Model acceleration:</strong> ${physics.moved ? `${physics.accelerationMps2.toFixed(3)} m/s^2` : "N/A"}</li>`,
-    `<li><strong>Model tension:</strong> ${physics.tensionN.toFixed(3)} N</li>`
-  ].join("");
-}
-
-function renderTable() {
-  const { trialRecords } = store.getState();
-
-  if (!trialRecords.length) {
-    elements.dataTableBody.innerHTML = "<tr><td colspan=\"9\">No accepted trials yet.</td></tr>";
-    updateActionButtons();
-    return;
-  }
-
-  elements.dataTableBody.innerHTML = trialRecords.map((record) => {
-    const scenario = scenarioTitle(/** @type {"cart_only" | "cart_plus_pad"} */ (record.scenario));
-
-    return [
-      "<tr>",
-      `<td>${record.trial_id}</td>`,
-      `<td>${scenario}</td>`,
-      `<td>${record.hanging_mass_kg.toFixed(2)}</td>`,
-      `<td>${record.force_mean_N.toFixed(3)}</td>`,
-      `<td>${record.accel_mps2.toFixed(3)}</td>`,
-      `<td>${record.force_window_start_s.toFixed(2)} - ${record.force_window_end_s.toFixed(2)}</td>`,
-      `<td>${record.vel_window_start_s.toFixed(2)} - ${record.vel_window_end_s.toFixed(2)}</td>`,
-      `<td><button class=\"table-button\" data-trial-id=\"${record.trial_id}\">Remove</button></td>`,
-      "</tr>"
-    ].join("");
-  }).join("");
-
-  updateActionButtons();
-}
-
-function renderFitView() {
-  const state = store.getState();
-  const relevantRecords = state.trialRecords.filter((record) => record.scenario === state.scenario);
-  const points = relevantRecords.map((record) => ({
-    x: record.accel_mps2,
-    y: record.force_mean_N
-  }));
-
-  const fit = points.length >= 2
-    ? linearRegression(
-      points.map((point) => point.x),
-      points.map((point) => point.y)
-    )
-    : null;
-
-  fitGraph.setData({
-    points,
-    fit
-  });
-
-  if (!fit) {
-    elements.fitEquation.textContent = `Need at least 2 accepted ${scenarioTitle(state.scenario)} trials for a linear fit.`;
-    elements.fitQuality.textContent = "R^2: --";
-    elements.fitInterpretation.innerHTML = "<li>Mathematical meaning: slope = rate of change of force with acceleration.</li><li>Physical meaning prompt: compare slope and intercept for part 1 vs part 2 after collecting enough data.</li>";
-    renderChecklist();
-    return;
-  }
-
-  elements.fitEquation.textContent = `F = (${fit.slope.toFixed(3)})a + (${fit.intercept.toFixed(3)})`;
-  elements.fitQuality.textContent = `R^2 = ${fit.r2.toFixed(4)} with ${fit.count} points`;
-
-  const scenarioPrompt = state.scenario === "cart_plus_pad"
-    ? "For cart + friction pad, expect a larger positive intercept because friction resists motion."
-    : "For cart only, intercept should stay near zero when friction is minimal.";
-
-  elements.fitInterpretation.innerHTML = [
-    `<li><strong>Mathematical slope:</strong> ${fit.slope.toFixed(3)} N/(m/s^2)</li>`,
-    `<li><strong>Mathematical intercept:</strong> ${fit.intercept.toFixed(3)} N</li>`,
-    "<li><strong>Physical meaning hint:</strong> Slope approximates effective accelerated mass of the system.</li>",
-    "<li><strong>Physical meaning hint:</strong> Intercept represents resistive-force offset when acceleration trends toward zero.</li>",
-    `<li><strong>Scenario check:</strong> ${scenarioPrompt}</li>`
-  ].join("");
-
-  renderChecklist();
-}
-
-function renderChecklist() {
-  const state = store.getState();
-
-  const relevantRecords = state.trialRecords.filter((record) => record.scenario === state.scenario);
-  const setupDone = Boolean(state.presetId && state.hangingMassKg);
-  const runDone = Boolean(state.currentTrial);
-  const forceDone = state.measurement.forceMeanN !== null;
-  const velocityDone = state.measurement.accelerationMps2 !== null;
-  const addDone = relevantRecords.length > 0;
-  const fitDone = relevantRecords.length >= 2;
-  const exportReady = state.trialRecords.length > 0;
-
-  toggleChecklistItem(elements.checklistItems.setup, setupDone);
-  toggleChecklistItem(elements.checklistItems.run, runDone);
-  toggleChecklistItem(elements.checklistItems.forceWindow, forceDone);
-  toggleChecklistItem(elements.checklistItems.velocityWindow, velocityDone);
-  toggleChecklistItem(elements.checklistItems.add, addDone);
-  toggleChecklistItem(elements.checklistItems.fit, fitDone);
-  toggleChecklistItem(elements.checklistItems.export, exportReady);
-}
-
-/**
- * @param {HTMLElement} element
- * @param {boolean} done
- */
-function toggleChecklistItem(element, done) {
-  element.classList.toggle("done", done);
-  element.querySelector("span").textContent = done ? "Done" : "Pending";
-}
-
-function updateActionButtons() {
-  const state = store.getState();
-
-  const canAddTrial = Boolean(
-    state.currentTrial
-      && state.currentTrial.physics.moved
-      && state.measurement.forceMeanN !== null
-      && state.measurement.accelerationMps2 !== null
-      && isValidSelection(state.measurement.forceWindow)
-      && isValidSelection(state.measurement.velocityWindow)
-  );
-
-  elements.addTrialButton.disabled = !canAddTrial;
-  elements.exportCsvButton.disabled = state.trialRecords.length === 0;
-  elements.clearTrialsButton.disabled = state.trialRecords.length === 0;
-  elements.exportPngButton.disabled = state.currentTrial === null;
-}
-
-function renderFbd() {
-  const state = store.getState();
-
-  elements.fbdPanel.hidden = !state.showFbd;
-  if (!state.showFbd) {
-    return;
-  }
-
-  const config = state.currentTrial
-    ? state.currentTrial.physics.config
-    : getScenarioConfig({
-      scenario: state.scenario,
-      presetId: state.presetId,
-      hangingMassKg: state.hangingMassKg
-    });
-
-  const tension = state.currentTrial?.physics.tensionN ?? state.hangingMassKg * 9.81;
-  const drag = config.dragN;
-  const weight = config.systemMassKg * 9.81;
-
-  const isPadScenario = state.scenario === "cart_plus_pad";
-  const objectLabel = isPadScenario ? "Cart + Pad" : "Cart";
-
-  elements.fbdFigure.innerHTML = `
-    <svg viewBox="0 0 520 220" role="img" aria-label="Free-body diagram for ${objectLabel}">
-      <defs>
-        <marker id="arrowHead" markerWidth="10" markerHeight="7" refX="9" refY="3.5" orient="auto">
-          <polygon points="0 0, 10 3.5, 0 7" fill="#124d62"></polygon>
-        </marker>
-      </defs>
-      <rect x="180" y="90" width="140" height="70" rx="8" fill="#e6f4f8" stroke="#124d62" stroke-width="2"></rect>
-      ${isPadScenario ? '<rect x="190" y="165" width="120" height="10" rx="2" fill="#cf8f2f"></rect>' : ""}
-      <line x1="320" y1="125" x2="430" y2="125" stroke="#124d62" stroke-width="3" marker-end="url(#arrowHead)"></line>
-      <line x1="180" y1="125" x2="90" y2="125" stroke="#124d62" stroke-width="3" marker-end="url(#arrowHead)"></line>
-      <line x1="250" y1="90" x2="250" y2="25" stroke="#124d62" stroke-width="3" marker-end="url(#arrowHead)"></line>
-      <line x1="250" y1="160" x2="250" y2="210" stroke="#124d62" stroke-width="3" marker-end="url(#arrowHead)"></line>
-      <text x="345" y="112" fill="#0b3342" font-size="13">Tension ≈ ${tension.toFixed(2)} N</text>
-      <text x="55" y="112" fill="#0b3342" font-size="13">Drag ≈ ${drag.toFixed(2)} N</text>
-      <text x="260" y="45" fill="#0b3342" font-size="13">Normal ≈ ${weight.toFixed(2)} N</text>
-      <text x="258" y="205" fill="#0b3342" font-size="13">Weight ≈ ${weight.toFixed(2)} N</text>
-      <text x="205" y="130" fill="#0b3342" font-size="14">${objectLabel}</text>
-    </svg>
-  `;
+  const custom = document.createElement("option");
+  custom.value = "custom";
+  custom.textContent = "Custom (slider)";
+  elements.frequencySelect.append(custom);
 }
 
 /**
  * @param {string} message
- * @param {"ok" | "warn"} tone
+ * @param {"default"|"warn"} tone
  */
-function setStatus(message, tone) {
+function setStatus(message, tone = "default") {
   elements.statusText.textContent = message;
-  elements.statusText.dataset.tone = tone;
+  elements.statusText.classList.toggle("warn", tone === "warn");
 }
 
-function syncControlsFromState() {
-  const state = store.getState();
-  const expectedOptions = availablePresets(state.scenario).map((preset) => preset.id);
-  const currentOptions = Array.from(elements.presetSelect.options).map((option) => option.value);
-  if (expectedOptions.join(",") !== currentOptions.join(",")) {
-    hydratePresetSelect(state.scenario, state.presetId);
+/**
+ * @param {string} message
+ * @param {"default"|"warn"} tone
+ * @param {number} durationMs
+ */
+function showTransientStatus(message, tone = "default", durationMs = 2600) {
+  state.transientStatus = { message, tone };
+  if (statusTimeoutId !== null) {
+    window.clearTimeout(statusTimeoutId);
   }
-  elements.presetSelect.disabled = state.scenario === "cart_only";
-  elements.scenarioSelect.value = state.scenario;
-  elements.presetSelect.value = state.presetId;
-  elements.hangingMassSelect.value = String(state.hangingMassKg);
-  elements.noiseCheckbox.checked = state.noiseEnabled;
-  elements.showFbdCheckbox.checked = state.showFbd;
+
+  statusTimeoutId = window.setTimeout(() => {
+    state.transientStatus = null;
+    render();
+  }, durationMs);
 }
 
-function renderAll() {
-  syncControlsFromState();
-  renderPresetDetails();
-  renderCurrentTrialSummary();
-  renderMeasurementPanel();
-  renderTable();
-  renderFitView();
-  renderChecklist();
-  renderFbd();
-  updateActionButtons();
+function getDerivedState() {
+  const unclampedTarget = firstHarmonicAirLengthM({
+    frequencyHz: state.frequencyHz,
+    speedMps: REFERENCE_SPEED_MPS,
+    tubeDiameterM: TUBE_DIAMETER_M
+  });
+  const targetLengthM = clamp(unclampedTarget, AIR_LENGTH_MIN_M, AIR_LENGTH_MAX_M);
+  const strength = resonanceStrength({
+    airLengthM: state.airLengthM,
+    targetLengthM,
+    bandwidthM: Math.max(0.008, targetLengthM * 0.055)
+  });
+  const quality = qualityBand(strength);
+
+  return {
+    targetLengthM,
+    strength,
+    quality,
+    atMaximum: strength >= TARGET_MAX_THRESHOLD,
+    instantSpeedMps: inferredSpeedMps({
+      frequencyHz: state.frequencyHz,
+      airLengthM: state.airLengthM,
+      tubeDiameterM: TUBE_DIAMETER_M
+    })
+  };
 }
 
-function init() {
-  hydrateSelectors();
+/**
+ * @param {boolean} condition
+ * @param {HTMLElement|null} element
+ */
+function markStep(condition, element) {
+  if (!element) {
+    return;
+  }
+
+  element.classList.toggle("done", condition);
+}
+
+function updateChecklist(derived) {
+  markStep(state.predictionM !== null, elements.stepPredict);
+  markStep(state.toneStarted, elements.stepTone);
+  markStep(state.foundMaximum || derived.atMaximum, elements.stepMax);
+
+  const acceptedCount = state.records.filter((record) => record.accepted).length;
+  markStep(acceptedCount >= 3, elements.stepTrials);
+}
+
+function renderTableAndStats() {
+  const rows = state.records;
+  if (!rows.length) {
+    elements.trialTableBody.innerHTML = "<tr><td colspan=\"5\">No trials yet. Start tone, find max loudness, then record.</td></tr>";
+  } else {
+    elements.trialTableBody.innerHTML = rows
+      .map((row) => `
+        <tr>
+          <td>${row.id}</td>
+          <td>${row.frequencyHz}</td>
+          <td>${format(row.lengthM, 3)}</td>
+          <td><span class="quality-pill ${row.qualityCss}">${row.qualityLabel}</span></td>
+          <td>${format(row.speedMps, 1)}</td>
+        </tr>
+      `)
+      .join("");
+  }
+
+  const accepted = rows.filter((row) => row.accepted);
+  elements.acceptedCount.textContent = String(accepted.length);
+
+  if (!accepted.length) {
+    elements.meanSpeed.textContent = "--";
+    elements.percentError.textContent = "--";
+    return;
+  }
+
+  const meanSpeed = accepted.reduce((sum, record) => sum + record.speedMps, 0) / accepted.length;
+  const errorPercent = (Math.abs(meanSpeed - REFERENCE_SPEED_MPS) / REFERENCE_SPEED_MPS) * 100;
+
+  elements.meanSpeed.textContent = `${format(meanSpeed, 1)} m/s`;
+  elements.percentError.textContent = `${format(errorPercent, 2)}%`;
+}
+
+function updatePredictionFeedback(derived) {
+  if (state.predictionM === null) {
+    elements.predictionFeedback.textContent = "";
+    return;
+  }
+
+  const deltaCm = Math.abs(state.predictionM - derived.targetLengthM) * 100;
+  if (derived.atMaximum || state.hintsEnabled) {
+    elements.predictionFeedback.textContent = `Prediction difference from target: ${format(deltaCm, 1)} cm`;
+  } else {
+    elements.predictionFeedback.textContent = "Make your prediction first, then test with the simulation.";
+  }
+}
+
+/**
+ * @param {number} timestamp
+ * @param {{targetLengthM:number, strength:number}} derived
+ */
+function drawTube(timestamp, derived) {
+  if (!tubeContext) {
+    return;
+  }
+
+  resizeCanvasToDisplaySize(elements.tubeCanvas);
+
+  const ratio = window.devicePixelRatio || 1;
+  const ctx = tubeContext;
+  const width = elements.tubeCanvas.width;
+  const height = elements.tubeCanvas.height;
+
+  const tubeWidth = Math.min(160 * ratio, width * 0.24);
+  const tubeLeft = width * 0.5 - tubeWidth * 0.5;
+  const tubeRight = tubeLeft + tubeWidth;
+  const tubeTop = 42 * ratio;
+  const tubeBottom = height - 42 * ratio;
+  const tubeHeight = tubeBottom - tubeTop;
+
+  const airFraction = (state.airLengthM - AIR_LENGTH_MIN_M) / (AIR_LENGTH_MAX_M - AIR_LENGTH_MIN_M);
+  const waterY = tubeBottom - clamp(airFraction, 0, 1) * tubeHeight;
+
+  ctx.clearRect(0, 0, width, height);
+
+  const bgGradient = ctx.createLinearGradient(0, 0, 0, height);
+  bgGradient.addColorStop(0, "#f5fbff");
+  bgGradient.addColorStop(1, "#eef6fa");
+  ctx.fillStyle = bgGradient;
+  ctx.fillRect(0, 0, width, height);
+
+  // Scale markings on the side of the tube.
+  ctx.save();
+  ctx.fillStyle = "#4f6973";
+  ctx.strokeStyle = "#7f9aa4";
+  ctx.lineWidth = 1.4 * ratio;
+  ctx.font = `${11 * ratio}px "Avenir Next", sans-serif`;
+  ctx.textAlign = "right";
+
+  for (let mark = 0.1; mark <= 0.9; mark += 0.1) {
+    const y = tubeBottom - ((mark - AIR_LENGTH_MIN_M) / (AIR_LENGTH_MAX_M - AIR_LENGTH_MIN_M)) * tubeHeight;
+    if (y < tubeTop || y > tubeBottom) {
+      continue;
+    }
+
+    ctx.beginPath();
+    ctx.moveTo(tubeLeft - 18 * ratio, y);
+    ctx.lineTo(tubeLeft - 5 * ratio, y);
+    ctx.stroke();
+    ctx.fillText(`${mark.toFixed(1)} m`, tubeLeft - 22 * ratio, y + 3.5 * ratio);
+  }
+  ctx.restore();
+
+  ctx.save();
+  ctx.strokeStyle = "#2c5663";
+  ctx.lineWidth = 3 * ratio;
+  ctx.fillStyle = "rgba(255, 255, 255, 0.5)";
+  ctx.beginPath();
+  ctx.rect(tubeLeft, tubeTop, tubeWidth, tubeHeight);
+  ctx.fill();
+  ctx.stroke();
+  ctx.restore();
+
+  ctx.save();
+  const waterGradient = ctx.createLinearGradient(0, waterY, 0, tubeBottom);
+  waterGradient.addColorStop(0, "rgba(59, 136, 166, 0.82)");
+  waterGradient.addColorStop(1, "rgba(31, 104, 133, 0.95)");
+  ctx.fillStyle = waterGradient;
+  ctx.fillRect(tubeLeft + 2 * ratio, waterY, tubeWidth - 4 * ratio, tubeBottom - waterY);
+
+  ctx.strokeStyle = "rgba(240, 249, 255, 0.75)";
+  ctx.lineWidth = 1.4 * ratio;
+  ctx.beginPath();
+  ctx.moveTo(tubeLeft + 2 * ratio, waterY + 1.5 * ratio);
+  ctx.lineTo(tubeRight - 2 * ratio, waterY + 1.5 * ratio);
+  ctx.stroke();
+  ctx.restore();
+
+  // Tuning fork shape near opening.
+  const phase = timestamp / 130;
+  const tineOffset = state.toneEnabled ? Math.sin(phase) * (2 + 4 * derived.strength) * ratio : 0;
+  const forkX = tubeRight + 120 * ratio;
+  const forkY = tubeTop + 22 * ratio;
+
+  ctx.save();
+  ctx.strokeStyle = "#7d5d26";
+  ctx.lineWidth = 6 * ratio;
+  ctx.beginPath();
+  ctx.moveTo(forkX, forkY);
+  ctx.lineTo(forkX, forkY + 120 * ratio);
+  ctx.stroke();
+
+  ctx.strokeStyle = "#5e7480";
+  ctx.lineWidth = 8 * ratio;
+  ctx.beginPath();
+  ctx.moveTo(forkX - 22 * ratio - tineOffset, forkY);
+  ctx.lineTo(forkX - 22 * ratio - tineOffset, forkY - 62 * ratio);
+  ctx.moveTo(forkX + 22 * ratio + tineOffset, forkY);
+  ctx.lineTo(forkX + 22 * ratio + tineOffset, forkY - 62 * ratio);
+  ctx.stroke();
+  ctx.restore();
+
+  if (state.toneEnabled) {
+    const airLengthPixels = Math.max(10 * ratio, waterY - tubeTop);
+    const centerX = (tubeLeft + tubeRight) / 2;
+    const envelope = 10 * ratio + 24 * ratio * derived.strength;
+    const wavePhase = timestamp / 95;
+
+    ctx.save();
+    ctx.strokeStyle = `rgba(9, 128, 142, ${0.34 + 0.62 * derived.strength})`;
+    ctx.lineWidth = 2.3 * ratio;
+    ctx.beginPath();
+    for (let index = 0; index <= 240; index += 1) {
+      const u = index / 240;
+      const y = tubeTop + u * airLengthPixels;
+      const nodeEnvelope = Math.cos((Math.PI / 2) * u);
+      const x = centerX + envelope * nodeEnvelope * Math.sin(wavePhase + u * 9);
+      if (index === 0) {
+        ctx.moveTo(x, y);
+      } else {
+        ctx.lineTo(x, y);
+      }
+    }
+    ctx.stroke();
+
+    ctx.strokeStyle = `rgba(191, 127, 25, ${0.22 + 0.5 * derived.strength})`;
+    ctx.lineWidth = 1.6 * ratio;
+    ctx.beginPath();
+    for (let index = 0; index <= 240; index += 1) {
+      const u = index / 240;
+      const y = tubeTop + u * airLengthPixels;
+      const nodeEnvelope = Math.cos((Math.PI / 2) * u);
+      const x = centerX - envelope * 0.72 * nodeEnvelope * Math.sin(wavePhase * 1.2 + u * 11);
+      if (index === 0) {
+        ctx.moveTo(x, y);
+      } else {
+        ctx.lineTo(x, y);
+      }
+    }
+    ctx.stroke();
+    ctx.restore();
+  }
+
+  // Target marker shown only for scaffolded hint mode.
+  if (state.hintsEnabled) {
+    const targetFraction = (derived.targetLengthM - AIR_LENGTH_MIN_M) / (AIR_LENGTH_MAX_M - AIR_LENGTH_MIN_M);
+    const targetY = tubeBottom - clamp(targetFraction, 0, 1) * tubeHeight;
+
+    ctx.save();
+    ctx.strokeStyle = "#dc7f14";
+    ctx.setLineDash([8 * ratio, 6 * ratio]);
+    ctx.lineWidth = 2 * ratio;
+    ctx.beginPath();
+    ctx.moveTo(tubeLeft - 6 * ratio, targetY);
+    ctx.lineTo(tubeRight + 42 * ratio, targetY);
+    ctx.stroke();
+
+    ctx.fillStyle = "#a45b06";
+    ctx.font = `${12 * ratio}px "Avenir Next", sans-serif`;
+    ctx.fillText("Hint target", tubeRight + 48 * ratio, targetY + 4 * ratio);
+    ctx.restore();
+  }
+}
+
+function render() {
+  const derived = getDerivedState();
+  if (state.toneEnabled && derived.atMaximum) {
+    state.foundMaximum = true;
+  }
+
+  elements.frequencyValue.textContent = `${state.frequencyHz} Hz`;
+  elements.airLengthValue.textContent = `${format(state.airLengthM, 3)} m`;
+
+  elements.forkReadout.textContent = `${state.frequencyHz} Hz`;
+  elements.lengthReadout.textContent = `${format(state.airLengthM, 3)} m`;
+  elements.targetReadout.textContent = state.hintsEnabled
+    ? `${format(derived.targetLengthM, 3)} m`
+    : "Hidden (enable hints)";
+  elements.speedReadout.textContent = `${format(derived.instantSpeedMps, 1)} m/s`;
+
+  const percent = clamp(derived.strength * 100, 0, 100);
+  elements.loudnessFill.style.width = `${percent.toFixed(1)}%`;
+  elements.loudnessFill.classList.toggle("maxed", derived.atMaximum && state.toneEnabled);
+
+  if (!state.toneEnabled) {
+    elements.loudnessLabel.textContent = "Tone off";
+  } else if (derived.atMaximum) {
+    elements.loudnessLabel.textContent = "Maximum resonance";
+  } else if (derived.strength >= 0.88) {
+    elements.loudnessLabel.textContent = "Near peak";
+  } else {
+    elements.loudnessLabel.textContent = "Searching";
+  }
+
+  if (state.transientStatus) {
+    setStatus(state.transientStatus.message, state.transientStatus.tone);
+  } else {
+    if (!state.toneEnabled) {
+      setStatus("Press Start Tone, then move the pipe up/down to search for the first-harmonic maximum.");
+    } else if (derived.atMaximum) {
+      setStatus("Maximum found. Record this trial, then change frequency and repeat.");
+    } else if (derived.strength >= 0.88) {
+      setStatus("You are close. Make small pipe moves to find the exact loudest point.");
+    } else {
+      const direction = state.airLengthM < derived.targetLengthM ? "Down" : "Up";
+      setStatus(`Keep searching: move pipe ${direction} to approach first-harmonic resonance.`);
+    }
+  }
+
+  updatePredictionFeedback(derived);
+  updateChecklist(derived);
+  renderTableAndStats();
+
+  elements.recordButton.disabled = !state.toneStarted;
+
+  elements.toneButton.classList.toggle("active", state.toneEnabled);
+  elements.toneButton.textContent = state.toneEnabled ? "Stop Tone" : "Start Tone";
+
+  audio.setSignal(state.frequencyHz, derived.strength);
+}
+
+/**
+ * @param {number} lengthM
+ */
+function setAirLength(lengthM) {
+  state.airLengthM = clamp(lengthM, AIR_LENGTH_MIN_M, AIR_LENGTH_MAX_M);
+  elements.airLengthSlider.value = state.airLengthM.toFixed(3);
+  render();
+}
+
+/**
+ * @param {number} frequencyHz
+ */
+function setFrequency(frequencyHz) {
+  state.frequencyHz = clamp(Math.round(frequencyHz), 220, 800);
+  elements.frequencySlider.value = String(state.frequencyHz);
+
+  const isCommonFork = FORK_FREQUENCIES_HZ.includes(state.frequencyHz);
+  elements.frequencySelect.value = isCommonFork ? String(state.frequencyHz) : "custom";
+  render();
+}
+
+function recordTrial() {
+  const derived = getDerivedState();
+  const noise = (Math.random() * 2 - 1) * MEASUREMENT_NOISE_M;
+  const measuredLengthM = clamp(state.airLengthM + noise, AIR_LENGTH_MIN_M, AIR_LENGTH_MAX_M);
+  const speedMps = inferredSpeedMps({
+    frequencyHz: state.frequencyHz,
+    airLengthM: measuredLengthM,
+    tubeDiameterM: TUBE_DIAMETER_M
+  });
+
+  state.records.unshift({
+    id: state.nextRecordId,
+    frequencyHz: state.frequencyHz,
+    lengthM: measuredLengthM,
+    speedMps,
+    accepted: derived.quality.accepted,
+    qualityLabel: derived.quality.label,
+    qualityCss: derived.quality.css
+  });
+
+  state.nextRecordId += 1;
+
+  if (!derived.quality.accepted) {
+    showTransientStatus("Trial recorded, but quality is low. Try again nearer the maximum for accepted data.", "warn");
+  } else {
+    showTransientStatus("Accepted trial recorded. Change frequency and collect the next resonance point.");
+  }
+
+  render();
+}
+
+function bindEvents() {
+  elements.frequencySelect.addEventListener("change", () => {
+    if (elements.frequencySelect.value === "custom") {
+      return;
+    }
+
+    setFrequency(Number(elements.frequencySelect.value));
+  });
+
+  elements.frequencySlider.addEventListener("input", () => {
+    setFrequency(Number(elements.frequencySlider.value));
+  });
+
+  elements.airLengthSlider.addEventListener("input", () => {
+    setAirLength(Number(elements.airLengthSlider.value));
+  });
+
+  elements.pipeUpButton.addEventListener("click", () => {
+    setAirLength(state.airLengthM - PIPE_STEP_M);
+  });
+
+  elements.pipeDownButton.addEventListener("click", () => {
+    setAirLength(state.airLengthM + PIPE_STEP_M);
+  });
+
+  elements.predictionInput.addEventListener("change", () => {
+    const parsed = Number(elements.predictionInput.value);
+    state.predictionM = Number.isFinite(parsed) && parsed > 0 ? parsed : null;
+    render();
+  });
+
+  elements.hintToggle.addEventListener("change", () => {
+    state.hintsEnabled = elements.hintToggle.checked;
+    render();
+  });
+
+  elements.toneButton.addEventListener("click", async () => {
+    if (state.toneEnabled) {
+      state.toneEnabled = false;
+      await audio.setEnabled(false);
+      render();
+      return;
+    }
+
+    const ok = await audio.setEnabled(true);
+    if (!ok) {
+      showTransientStatus("This browser does not support Web Audio. Use a modern browser for sound playback.", "warn");
+      return;
+    }
+
+    state.toneEnabled = true;
+    state.toneStarted = true;
+    render();
+  });
+
+  elements.recordButton.addEventListener("click", () => {
+    if (!state.toneStarted) {
+      showTransientStatus("Start the tone first so you can locate resonance before recording.", "warn");
+      return;
+    }
+
+    recordTrial();
+  });
+
+  elements.clearButton.addEventListener("click", () => {
+    state.records = [];
+    state.nextRecordId = 1;
+    render();
+  });
+
+  window.addEventListener("resize", () => {
+    render();
+  });
+}
+
+function animate(timestamp) {
+  const derived = getDerivedState();
+  drawTube(timestamp, derived);
+  window.requestAnimationFrame(animate);
+}
+
+function initialize() {
+  buildFrequencyOptions();
   bindEvents();
 
-  const defaultPreset = getPresetById(store.getState().presetId);
-  store.setState({ noiseEnabled: defaultPreset.noiseDefault });
-
-  forceGraph.setData({
-    timesS: [],
-    values: [],
-    motionWindow: null,
-    selection: null
+  const initialTarget = firstHarmonicAirLengthM({
+    frequencyHz: state.frequencyHz,
+    speedMps: REFERENCE_SPEED_MPS,
+    tubeDiameterM: TUBE_DIAMETER_M
   });
+  setAirLength(clamp(initialTarget * 0.9, AIR_LENGTH_MIN_M, AIR_LENGTH_MAX_M));
+  setFrequency(state.frequencyHz);
 
-  velocityGraph.setData({
-    timesS: [],
-    values: [],
-    motionWindow: null,
-    selection: null
-  });
-
-  fitGraph.setData({
-    points: [],
-    fit: null
-  });
-  machineView.setTrial(null);
-
-  store.subscribe(() => {
-    renderAll();
-  });
-
-  renderAll();
-  setStatus("Set a scenario and click Run Trial.", "ok");
+  window.requestAnimationFrame(animate);
 }
 
-init();
+initialize();

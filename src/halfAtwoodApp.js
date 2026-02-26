@@ -1,0 +1,766 @@
+import {
+  calculateHalfAtwoodFromRest,
+  clamp,
+  resolveDynamicForces,
+  VELOCITY_EPSILON
+} from "./halfAtwoodPhysics.js";
+
+const GRAVITY_MPS2 = 10;
+
+/**
+ * @param {number} value
+ * @param {number} digits
+ * @returns {string}
+ */
+function fmt(value, digits = 2) {
+  return Number.isFinite(value) ? value.toFixed(digits) : "--";
+}
+
+/**
+ * @param {number} value
+ * @returns {string}
+ */
+function signed(value) {
+  const prefix = value > 0 ? "+" : "";
+  return `${prefix}${fmt(value)}`;
+}
+
+const elements = {
+  massTable: /** @type {HTMLInputElement} */ (document.querySelector("#massTable")),
+  massHanging: /** @type {HTMLInputElement} */ (document.querySelector("#massHanging")),
+  targetDistance: /** @type {HTMLInputElement} */ (document.querySelector("#targetDistance")),
+  initialVelocity: /** @type {HTMLInputElement} */ (document.querySelector("#initialVelocity")),
+  initialVelocityValue: document.querySelector("#initialVelocityValue"),
+  frictionEnabled: /** @type {HTMLInputElement} */ (document.querySelector("#frictionEnabled")),
+  mu: /** @type {HTMLInputElement} */ (document.querySelector("#mu")),
+  muValue: document.querySelector("#muValue"),
+  showForces: /** @type {HTMLInputElement} */ (document.querySelector("#showForces")),
+  startBtn: /** @type {HTMLButtonElement} */ (document.querySelector("#startBtn")),
+  pauseBtn: /** @type {HTMLButtonElement} */ (document.querySelector("#pauseBtn")),
+  resetBtn: /** @type {HTMLButtonElement} */ (document.querySelector("#resetBtn")),
+  recordBtn: /** @type {HTMLButtonElement} */ (document.querySelector("#recordBtn")),
+  clearBtn: /** @type {HTMLButtonElement} */ (document.querySelector("#clearBtn")),
+  themeToggle: /** @type {HTMLButtonElement} */ (document.querySelector("#themeToggle")),
+  statusText: document.querySelector("#statusText"),
+  simCanvas: /** @type {HTMLCanvasElement} */ (document.querySelector("#simCanvas")),
+  accelReadout: document.querySelector("#accelReadout"),
+  restAccelReadout: document.querySelector("#restAccelReadout"),
+  tensionReadout: document.querySelector("#tensionReadout"),
+  frictionReadout: document.querySelector("#frictionReadout"),
+  netReadout: document.querySelector("#netReadout"),
+  velocityReadout: document.querySelector("#velocityReadout"),
+  displacementReadout: document.querySelector("#displacementReadout"),
+  timeReadout: document.querySelector("#timeReadout"),
+  targetTimeReadout: document.querySelector("#targetTimeReadout"),
+  trialTableBody: document.querySelector("#trialTableBody"),
+  discoveryTabBtn: /** @type {HTMLButtonElement} */ (document.querySelector("#discoveryTabBtn")),
+  theoryTabBtn: /** @type {HTMLButtonElement} */ (document.querySelector("#theoryTabBtn")),
+  discoveryTab: document.querySelector("#discoveryTab"),
+  theoryTab: document.querySelector("#theoryTab")
+};
+
+const ctx = elements.simCanvas.getContext("2d");
+
+const state = {
+  massTableKg: 2.5,
+  massHangingKg: 1.2,
+  targetDistanceM: 2,
+  initialVelocityMps: 0,
+  frictionEnabled: true,
+  mu: 0.2,
+  showForces: true,
+  running: false,
+  timeS: 0,
+  displacementM: 0,
+  velocityMps: 0,
+  lastFrameMs: null,
+  nextTrialId: 1,
+  records: /** @type {Array<{id:number,massTableKg:number,massHangingKg:number,mu:number,accel:number,tension:number,timeToTarget:number|null,moved:boolean}>} */ ([])
+};
+
+let sceneLayout = {
+  travelMinM: -1,
+  travelMaxM: 1
+};
+
+function applyTheme(theme) {
+  document.documentElement.setAttribute("data-theme", theme);
+  elements.themeToggle.textContent = theme === "light" ? "Dark mode" : "Light mode";
+}
+
+function initTheme() {
+  const saved = window.localStorage.getItem("te-theme");
+  const theme = saved === "dark" || saved === "light" ? saved : "light";
+  applyTheme(theme);
+}
+
+/**
+ * @param {string} message
+ * @param {"default"|"warn"} tone
+ */
+function setStatus(message, tone = "default") {
+  elements.statusText.textContent = message;
+  elements.statusText.classList.toggle("warn", tone === "warn");
+}
+
+function syncInputsFromState() {
+  elements.massTable.value = String(state.massTableKg);
+  elements.massHanging.value = String(state.massHangingKg);
+  elements.targetDistance.value = String(state.targetDistanceM);
+  elements.initialVelocity.value = String(state.initialVelocityMps);
+  elements.frictionEnabled.checked = state.frictionEnabled;
+  elements.mu.value = String(state.mu);
+  elements.showForces.checked = state.showForces;
+  elements.initialVelocityValue.textContent = `${fmt(state.initialVelocityMps)} m/s`;
+  elements.muValue.textContent = fmt(state.mu, 2);
+  elements.mu.disabled = !state.frictionEnabled;
+}
+
+function resetMotion() {
+  state.running = false;
+  state.lastFrameMs = null;
+  state.timeS = 0;
+  state.displacementM = 0;
+  state.velocityMps = state.initialVelocityMps;
+}
+
+function readInputsIntoState() {
+  state.massTableKg = clamp(Number(elements.massTable.value) || 0, 0.2, 2500);
+  state.massHangingKg = clamp(Number(elements.massHanging.value) || 0, 0.1, 500);
+  state.targetDistanceM = clamp(Number(elements.targetDistance.value) || 0, 0.1, 12);
+  state.initialVelocityMps = clamp(Number(elements.initialVelocity.value) || 0, -4, 4);
+  state.frictionEnabled = elements.frictionEnabled.checked;
+  state.mu = clamp(Number(elements.mu.value) || 0, 0, 1);
+  state.showForces = elements.showForces.checked;
+
+  elements.initialVelocityValue.textContent = `${fmt(state.initialVelocityMps)} m/s`;
+  elements.muValue.textContent = fmt(state.mu, 2);
+  elements.mu.disabled = !state.frictionEnabled;
+}
+
+/**
+ * @returns {ReturnType<typeof calculateHalfAtwoodFromRest>}
+ */
+function fromRestSolution() {
+  return calculateHalfAtwoodFromRest({
+    massTableKg: state.massTableKg,
+    massHangingKg: state.massHangingKg,
+    mu: state.mu,
+    frictionEnabled: state.frictionEnabled,
+    gravity: GRAVITY_MPS2,
+    targetDistanceM: state.targetDistanceM
+  });
+}
+
+/**
+ * @returns {ReturnType<typeof resolveDynamicForces>}
+ */
+function dynamicSolution() {
+  return resolveDynamicForces({
+    massTableKg: state.massTableKg,
+    massHangingKg: state.massHangingKg,
+    mu: state.mu,
+    frictionEnabled: state.frictionEnabled,
+    gravity: GRAVITY_MPS2,
+    velocityMps: state.velocityMps
+  });
+}
+
+function updateReadouts() {
+  const rest = fromRestSolution();
+  const dynamic = dynamicSolution();
+
+  elements.accelReadout.textContent = `${signed(dynamic.accelerationMps2)} m/s²`;
+  elements.restAccelReadout.textContent = `${fmt(rest.accelerationMps2)} m/s²`;
+  elements.tensionReadout.textContent = `${fmt(dynamic.tensionN)} N`;
+
+  if (!state.frictionEnabled) {
+    elements.frictionReadout.textContent = "0.00 N (off)";
+  } else {
+    const direction = dynamic.frictionSignedN > 0 ? "right" : dynamic.frictionSignedN < 0 ? "left" : "none";
+    elements.frictionReadout.textContent = `${fmt(dynamic.frictionMagnitudeN)} N (${direction})`;
+  }
+
+  elements.netReadout.textContent = `${signed(dynamic.netForceN)} N`;
+  elements.velocityReadout.textContent = `${signed(state.velocityMps)} m/s`;
+  elements.displacementReadout.textContent = `${fmt(state.displacementM)} m`;
+  elements.timeReadout.textContent = `${fmt(state.timeS)} s`;
+  elements.targetTimeReadout.textContent = rest.timeToTargetS === null
+    ? "No motion from rest"
+    : `${fmt(rest.timeToTargetS)} s`;
+}
+
+function renderTrialTable() {
+  if (!elements.trialTableBody) {
+    return;
+  }
+
+  if (!state.records.length) {
+    elements.trialTableBody.innerHTML = '<tr><td colspan="8">No trials yet.</td></tr>';
+    return;
+  }
+
+  elements.trialTableBody.innerHTML = state.records
+    .map((record) => {
+      return `<tr>
+        <td>${record.id}</td>
+        <td>${fmt(record.massTableKg, 2)}</td>
+        <td>${fmt(record.massHangingKg, 2)}</td>
+        <td>${fmt(record.mu, 2)}</td>
+        <td>${fmt(record.accel, 3)}</td>
+        <td>${fmt(record.tension, 2)}</td>
+        <td>${record.timeToTarget === null ? "--" : fmt(record.timeToTarget, 2)}</td>
+        <td>${record.moved ? "Moves" : "Stuck"}</td>
+      </tr>`;
+    })
+    .join("");
+}
+
+/**
+ * @param {number} value
+ * @returns {number}
+ */
+function arrowScale(value) {
+  return clamp(Math.abs(value), 0.1, 2.5);
+}
+
+/**
+ * @param {number} width
+ * @param {number} height
+ */
+function getLayout(width, height) {
+  const tableTopY = height * 0.48;
+  const trackStartX = 60;
+  const edgeX = width * 0.72;
+  const pulleyRadius = Math.max(24, Math.min(36, width * 0.034));
+  const pulleyX = edgeX + pulleyRadius;
+  const pulleyY = tableTopY + pulleyRadius;
+  const blockW = 88;
+  const blockH = 48;
+  const blockBaseX = trackStartX + 96;
+  const hangingW = 74;
+  const hangingH = 66;
+  const rightTangentY = pulleyY;
+  const hangingStartY = rightTangentY + 6;
+  const ppm = Math.max(90, Math.min(150, width / 7.2));
+
+  const minBlockX = trackStartX + 6;
+  const maxBlockX = edgeX - blockW - 8;
+  const minHangingY = hangingStartY;
+  const maxHangingY = height - 24 - hangingH;
+
+  const travelMinM = Math.max((minBlockX - blockBaseX) / ppm, (minHangingY - hangingStartY) / ppm);
+  const travelMaxM = Math.min((maxBlockX - blockBaseX) / ppm, (maxHangingY - hangingStartY) / ppm);
+
+  return {
+    tableTopY,
+    trackStartX,
+    edgeX,
+    pulleyX,
+    pulleyY,
+    pulleyRadius,
+    blockW,
+    blockH,
+    blockBaseX,
+    hangingW,
+    hangingH,
+    hangingStartY,
+    ppm,
+    travelMinM,
+    travelMaxM
+  };
+}
+
+/**
+ * @param {number} fromX
+ * @param {number} fromY
+ * @param {number} toX
+ * @param {number} toY
+ * @param {string} color
+ * @param {string} label
+ */
+function drawForceArrow(fromX, fromY, toX, toY, color, label) {
+  const headLength = 8;
+  const angle = Math.atan2(toY - fromY, toX - fromX);
+  ctx.strokeStyle = color;
+  ctx.fillStyle = color;
+  ctx.lineWidth = 2.2;
+
+  ctx.beginPath();
+  ctx.moveTo(fromX, fromY);
+  ctx.lineTo(toX, toY);
+  ctx.stroke();
+
+  ctx.beginPath();
+  ctx.moveTo(toX, toY);
+  ctx.lineTo(toX - headLength * Math.cos(angle - Math.PI / 7), toY - headLength * Math.sin(angle - Math.PI / 7));
+  ctx.lineTo(toX - headLength * Math.cos(angle + Math.PI / 7), toY - headLength * Math.sin(angle + Math.PI / 7));
+  ctx.closePath();
+  ctx.fill();
+
+  ctx.font = "12px IBM Plex Sans";
+  ctx.fillStyle = "#123140";
+  ctx.fillText(label, toX + 6, toY - 4);
+}
+
+/**
+ * @param {number} y
+ * @param {number} centerX
+ * @param {number} magnitudePx
+ * @param {number} direction
+ * @param {string} color
+ * @param {string} label
+ */
+function drawDoubleIndicator(y, centerX, magnitudePx, direction, color, label) {
+  const length = Math.max(56, magnitudePx);
+  const leftX = centerX - length / 2;
+  const rightX = centerX + length / 2;
+  const head = 10;
+
+  ctx.strokeStyle = color;
+  ctx.fillStyle = color;
+  ctx.lineWidth = 3.2;
+
+  ctx.beginPath();
+  ctx.moveTo(leftX, y);
+  ctx.lineTo(rightX, y);
+  ctx.stroke();
+
+  ctx.beginPath();
+  ctx.moveTo(leftX, y);
+  ctx.lineTo(leftX + head, y - 6);
+  ctx.lineTo(leftX + head, y + 6);
+  ctx.closePath();
+  ctx.fill();
+
+  ctx.beginPath();
+  ctx.moveTo(rightX, y);
+  ctx.lineTo(rightX - head, y - 6);
+  ctx.lineTo(rightX - head, y + 6);
+  ctx.closePath();
+  ctx.fill();
+
+  const markerX = direction >= 0 ? rightX + 12 : leftX - 20;
+  ctx.beginPath();
+  ctx.arc(markerX + 8, y, 9, 0, Math.PI * 2);
+  ctx.fillStyle = color;
+  ctx.fill();
+
+  ctx.fillStyle = "#ffffff";
+  ctx.font = "700 12px IBM Plex Sans";
+  ctx.fillText(label, markerX + 5, y + 4);
+}
+
+function resizeCanvas() {
+  const ratio = window.devicePixelRatio || 1;
+  const width = Math.floor(elements.simCanvas.clientWidth * ratio);
+  const height = Math.floor(elements.simCanvas.clientHeight * ratio);
+
+  if (elements.simCanvas.width !== width || elements.simCanvas.height !== height) {
+    elements.simCanvas.width = width;
+    elements.simCanvas.height = height;
+  }
+
+  ctx.setTransform(ratio, 0, 0, ratio, 0, 0);
+}
+
+function renderScene() {
+  resizeCanvas();
+
+  const width = elements.simCanvas.clientWidth;
+  const height = elements.simCanvas.clientHeight;
+  sceneLayout = getLayout(width, height);
+
+  state.displacementM = clamp(state.displacementM, sceneLayout.travelMinM, sceneLayout.travelMaxM);
+
+  const xPx = state.displacementM * sceneLayout.ppm;
+  const blockX = sceneLayout.blockBaseX + xPx;
+  const blockY = sceneLayout.tableTopY - sceneLayout.blockH;
+
+  const rightTangentX = sceneLayout.pulleyX + sceneLayout.pulleyRadius;
+  const hangX = rightTangentX - sceneLayout.hangingW / 2;
+  const hangY = sceneLayout.hangingStartY + xPx;
+  const isDark = document.documentElement.getAttribute("data-theme") === "dark";
+
+  ctx.clearRect(0, 0, width, height);
+
+  const sky = ctx.createLinearGradient(0, 0, 0, height);
+  sky.addColorStop(0, isDark ? "#1a202c" : "#f8fcff");
+  sky.addColorStop(1, isDark ? "#0d1118" : "#eef6fb");
+  ctx.fillStyle = sky;
+  ctx.fillRect(0, 0, width, height);
+
+  const tableGradient = ctx.createLinearGradient(0, sceneLayout.tableTopY + 8, 0, sceneLayout.tableTopY + 70);
+  tableGradient.addColorStop(0, isDark ? "#5a4b3b" : "#f2dbc0");
+  tableGradient.addColorStop(1, isDark ? "#443828" : "#e0c3a2");
+
+  ctx.fillStyle = tableGradient;
+  ctx.fillRect(sceneLayout.trackStartX - 30, sceneLayout.tableTopY + 8, sceneLayout.edgeX - sceneLayout.trackStartX + 35, 46);
+
+  ctx.strokeStyle = isDark ? "#9b7c58" : "#6b5540";
+  ctx.lineWidth = 3;
+  ctx.beginPath();
+  ctx.moveTo(sceneLayout.trackStartX - 15, sceneLayout.tableTopY + 8);
+  ctx.lineTo(sceneLayout.edgeX + 3, sceneLayout.tableTopY + 8);
+  ctx.stroke();
+
+  ctx.strokeStyle = isDark ? "#98a6b8" : "#5b7084";
+  ctx.lineWidth = 5;
+  ctx.beginPath();
+  ctx.moveTo(sceneLayout.edgeX + 2, sceneLayout.tableTopY - 56);
+  ctx.lineTo(sceneLayout.edgeX + 2, sceneLayout.tableTopY + 12);
+  ctx.stroke();
+
+  ctx.save();
+  ctx.translate(sceneLayout.pulleyX, sceneLayout.pulleyY);
+  ctx.rotate((state.displacementM * sceneLayout.ppm) / (sceneLayout.pulleyRadius || 1));
+  ctx.fillStyle = isDark ? "#7d899a" : "#9aaabd";
+  ctx.beginPath();
+  ctx.arc(0, 0, sceneLayout.pulleyRadius, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.strokeStyle = isDark ? "#c0cad7" : "#3c4f62";
+  ctx.lineWidth = 2;
+  ctx.stroke();
+
+  for (let i = 0; i < 6; i += 1) {
+    ctx.rotate(Math.PI / 3);
+    ctx.strokeStyle = isDark ? "#b8c3d2" : "#5b6f84";
+    ctx.lineWidth = 1.6;
+    ctx.beginPath();
+    ctx.moveTo(0, 0);
+    ctx.lineTo(sceneLayout.pulleyRadius - 8, 0);
+    ctx.stroke();
+  }
+
+  ctx.fillStyle = isDark ? "#d0d7e3" : "#2e3f50";
+  ctx.beginPath();
+  ctx.arc(0, 0, 7, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.restore();
+
+  const blockAttachX = blockX + sceneLayout.blockW;
+  const blockAttachY = sceneLayout.tableTopY;
+  const topTangentX = sceneLayout.edgeX;
+  const topTangentY = sceneLayout.tableTopY;
+
+  ctx.strokeStyle = isDark ? "#d6deea" : "#4c5f72";
+  ctx.lineWidth = 2.8;
+  ctx.beginPath();
+  ctx.moveTo(blockAttachX, blockAttachY);
+  ctx.lineTo(topTangentX, topTangentY);
+  ctx.arc(sceneLayout.pulleyX, sceneLayout.pulleyY, sceneLayout.pulleyRadius, -Math.PI / 2, 0, false);
+  ctx.lineTo(rightTangentX, hangY);
+  ctx.stroke();
+
+  const blockGradient = ctx.createLinearGradient(blockX, blockY, blockX, blockY + sceneLayout.blockH);
+  blockGradient.addColorStop(0, "#7cc4db");
+  blockGradient.addColorStop(1, "#4f97b5");
+  ctx.fillStyle = blockGradient;
+  ctx.fillRect(blockX, blockY, sceneLayout.blockW, sceneLayout.blockH);
+  ctx.strokeStyle = "#1a5b74";
+  ctx.lineWidth = 2;
+  ctx.strokeRect(blockX, blockY, sceneLayout.blockW, sceneLayout.blockH);
+
+  const hangingGradient = ctx.createLinearGradient(hangX, hangY, hangX, hangY + sceneLayout.hangingH);
+  hangingGradient.addColorStop(0, "#f5c885");
+  hangingGradient.addColorStop(1, "#d49840");
+  ctx.fillStyle = hangingGradient;
+  ctx.fillRect(hangX, hangY, sceneLayout.hangingW, sceneLayout.hangingH);
+  ctx.strokeStyle = "#7a4f12";
+  ctx.lineWidth = 2;
+  ctx.strokeRect(hangX, hangY, sceneLayout.hangingW, sceneLayout.hangingH);
+
+  ctx.font = "700 14px IBM Plex Sans";
+  ctx.fillStyle = isDark ? "#eef2f9" : "#123140";
+  ctx.fillText("mₜ", blockX + sceneLayout.blockW / 2 - 10, blockY + sceneLayout.blockH / 2 + 5);
+  ctx.fillText("mₕ", hangX + sceneLayout.hangingW / 2 - 10, hangY + sceneLayout.hangingH / 2 + 5);
+
+  const dynamic = dynamicSolution();
+
+  if (state.showForces) {
+    const bx = blockX + sceneLayout.blockW / 2;
+    const by = blockY + sceneLayout.blockH / 2;
+    const hx = hangX + sceneLayout.hangingW / 2;
+    const hy = hangY + sceneLayout.hangingH / 2;
+    const gravityScale = 36;
+
+    drawForceArrow(bx, by + 2, bx, by + gravityScale, "#d77a49", "Wₜ");
+    drawForceArrow(bx, by - 2, bx, by - gravityScale, "#1e8cc0", "N");
+    drawForceArrow(bx + 4, by, bx + 12 + 22 * arrowScale(dynamic.tensionN / 20), by, "#36617a", "T");
+
+    if (state.frictionEnabled && Math.abs(dynamic.frictionSignedN) > 1e-3) {
+      const frictionDir = Math.sign(dynamic.frictionSignedN);
+      drawForceArrow(
+        bx,
+        by + 16,
+        bx + frictionDir * (16 + 22 * arrowScale(dynamic.frictionMagnitudeN / 20)),
+        by + 16,
+        "#d08d2a",
+        "f"
+      );
+    }
+
+    drawForceArrow(hx, hy - 2, hx, hy - (12 + 20 * arrowScale(dynamic.tensionN / 20)), "#36617a", "T");
+    drawForceArrow(hx, hy + 4, hx, hy + (18 + gravityScale), "#d77a49", "Wₕ");
+  }
+
+  drawDoubleIndicator(
+    blockY - 18,
+    blockX + sceneLayout.blockW / 2,
+    72 + 22 * arrowScale(dynamic.accelerationMps2),
+    dynamic.accelerationMps2 >= 0 ? 1 : -1,
+    "#d84f3d",
+    "a"
+  );
+
+  drawDoubleIndicator(
+    blockY - 44,
+    blockX + sceneLayout.blockW / 2,
+    68 + 20 * arrowScale(state.velocityMps),
+    state.velocityMps >= 0 ? 1 : -1,
+    "#0f7e9b",
+    "v"
+  );
+
+  ctx.font = "12px IBM Plex Sans";
+  ctx.fillStyle = isDark ? "#d8dfeb" : "#2b4b58";
+  ctx.fillText(`x = ${fmt(state.displacementM)} m`, 18, 26);
+  ctx.fillText(`t = ${fmt(state.timeS)} s`, 18, 44);
+}
+
+/**
+ * @param {number} timestampMs
+ */
+function animate(timestampMs) {
+  if (!state.running) {
+    return;
+  }
+
+  if (state.lastFrameMs === null) {
+    state.lastFrameMs = timestampMs;
+  }
+
+  const dt = Math.min(0.035, (timestampMs - state.lastFrameMs) / 1000);
+  state.lastFrameMs = timestampMs;
+
+  const dynamic = dynamicSolution();
+
+  if (dynamic.mode === "static_hold" && Math.abs(state.velocityMps) <= VELOCITY_EPSILON) {
+    state.velocityMps = 0;
+    state.running = false;
+    setStatus("Static friction holds the system at rest under current settings.", "warn");
+  } else {
+    state.velocityMps += dynamic.accelerationMps2 * dt;
+    state.displacementM += state.velocityMps * dt;
+    state.timeS += dt;
+
+    if (state.displacementM >= sceneLayout.travelMaxM || state.displacementM <= sceneLayout.travelMinM) {
+      state.displacementM = clamp(state.displacementM, sceneLayout.travelMinM, sceneLayout.travelMaxM);
+      state.running = false;
+      state.velocityMps = 0;
+      setStatus("Motion reached a physical boundary. Press Reset for another run.", "warn");
+    }
+  }
+
+  updateReadouts();
+  renderScene();
+
+  if (state.running) {
+    window.requestAnimationFrame(animate);
+  }
+}
+
+function startRun() {
+  if (state.running) {
+    return;
+  }
+
+  const rest = fromRestSolution();
+
+  if (Math.abs(state.velocityMps) <= VELOCITY_EPSILON && !rest.moved) {
+    setStatus("No motion starts from rest: drive force is not greater than friction.", "warn");
+    updateReadouts();
+    renderScene();
+    return;
+  }
+
+  state.running = true;
+  state.lastFrameMs = null;
+  setStatus("Simulation running. Observe acceleration, tension, and friction direction.");
+  window.requestAnimationFrame(animate);
+}
+
+function pauseRun() {
+  state.running = false;
+  state.lastFrameMs = null;
+  setStatus("Paused. You can adjust parameters or resume.");
+}
+
+function resetRun() {
+  resetMotion();
+  setStatus("Reset complete. Ready for a new trial.");
+  updateReadouts();
+  renderScene();
+}
+
+function recordTrial() {
+  const rest = fromRestSolution();
+  state.records.unshift({
+    id: state.nextTrialId,
+    massTableKg: state.massTableKg,
+    massHangingKg: state.massHangingKg,
+    mu: state.frictionEnabled ? state.mu : 0,
+    accel: rest.accelerationMps2,
+    tension: rest.tensionN,
+    timeToTarget: rest.timeToTargetS,
+    moved: rest.moved
+  });
+  state.nextTrialId += 1;
+
+  renderTrialTable();
+  setStatus("Trial recorded in the table.");
+}
+
+function clearTrials() {
+  state.records = [];
+  state.nextTrialId = 1;
+  renderTrialTable();
+  setStatus("Trial table cleared.");
+}
+
+/**
+ * @param {"baseline"|"packet"|"cliff"} preset
+ */
+function applyPreset(preset) {
+  if (preset === "baseline") {
+    state.massTableKg = 2.5;
+    state.massHangingKg = 1.2;
+    state.frictionEnabled = false;
+    state.mu = 0.2;
+    state.initialVelocityMps = 0;
+    state.targetDistanceM = 2;
+    setStatus("Loaded frictionless baseline.");
+  } else if (preset === "packet") {
+    state.massTableKg = 2.5;
+    state.massHangingKg = 1.8;
+    state.frictionEnabled = true;
+    state.mu = 0.2;
+    state.initialVelocityMps = 0;
+    state.targetDistanceM = 2;
+    setStatus("Loaded packet-style friction scenario.");
+  } else {
+    state.massTableKg = 1000;
+    state.massHangingKg = 50;
+    state.frictionEnabled = false;
+    state.mu = 0.2;
+    state.initialVelocityMps = 0;
+    state.targetDistanceM = 10;
+    setStatus("Loaded car + rock analog (packet-style Atwood context).");
+  }
+
+  resetMotion();
+  syncInputsFromState();
+  updateReadouts();
+  renderScene();
+}
+
+/**
+ * @param {"discovery"|"theory"} tab
+ */
+function setTab(tab) {
+  const discoveryActive = tab === "discovery";
+
+  elements.discoveryTabBtn.classList.toggle("active", discoveryActive);
+  elements.theoryTabBtn.classList.toggle("active", !discoveryActive);
+
+  elements.discoveryTabBtn.setAttribute("aria-selected", String(discoveryActive));
+  elements.theoryTabBtn.setAttribute("aria-selected", String(!discoveryActive));
+
+  elements.discoveryTab.classList.toggle("active", discoveryActive);
+  elements.theoryTab.classList.toggle("active", !discoveryActive);
+}
+
+function bindEvents() {
+  const refreshFromInputs = () => {
+    const wasRunning = state.running;
+    state.running = false;
+    readInputsIntoState();
+    if (!wasRunning) {
+      state.velocityMps = state.initialVelocityMps;
+      state.timeS = 0;
+      state.displacementM = 0;
+    }
+    updateReadouts();
+    renderScene();
+  };
+
+  const inputIds = [
+    "massTable",
+    "massHanging",
+    "targetDistance",
+    "initialVelocity",
+    "frictionEnabled",
+    "mu",
+    "showForces"
+  ];
+
+  for (const id of inputIds) {
+    const element = /** @type {HTMLInputElement} */ (document.querySelector(`#${id}`));
+    element.addEventListener("input", refreshFromInputs);
+    element.addEventListener("change", refreshFromInputs);
+  }
+
+  elements.startBtn.addEventListener("click", () => {
+    readInputsIntoState();
+    startRun();
+  });
+
+  elements.pauseBtn.addEventListener("click", pauseRun);
+  elements.resetBtn.addEventListener("click", () => {
+    readInputsIntoState();
+    resetRun();
+  });
+
+  elements.recordBtn.addEventListener("click", () => {
+    readInputsIntoState();
+    recordTrial();
+  });
+
+  elements.clearBtn.addEventListener("click", clearTrials);
+  elements.themeToggle.addEventListener("click", () => {
+    const current = document.documentElement.getAttribute("data-theme") === "dark" ? "dark" : "light";
+    const next = current === "dark" ? "light" : "dark";
+    applyTheme(next);
+    window.localStorage.setItem("te-theme", next);
+    renderScene();
+  });
+
+  document.querySelectorAll("[data-preset]").forEach((button) => {
+    button.addEventListener("click", () => {
+      const preset = button.getAttribute("data-preset");
+      if (preset === "baseline" || preset === "packet" || preset === "cliff") {
+        applyPreset(preset);
+      }
+    });
+  });
+
+  elements.discoveryTabBtn.addEventListener("click", () => setTab("discovery"));
+  elements.theoryTabBtn.addEventListener("click", () => setTab("theory"));
+
+  window.addEventListener("resize", () => {
+    renderScene();
+  });
+}
+
+function init() {
+  initTheme();
+  syncInputsFromState();
+  resetMotion();
+  bindEvents();
+  renderTrialTable();
+  updateReadouts();
+  renderScene();
+  setStatus("Ready. Use presets for quick discovery runs, then record trials.");
+}
+
+init();
