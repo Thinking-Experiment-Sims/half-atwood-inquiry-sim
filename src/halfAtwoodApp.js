@@ -229,25 +229,29 @@ function arrowScale(value) {
  * @param {number} height
  */
 function getLayout(width, height) {
-  const tableTopY = height * 0.56;
+  const tableTopY = height * 0.42;
   const trackStartX = Math.max(42, width * 0.04);
-  const edgeX = width * 0.73;
-  const pulleyRadius = Math.max(34, Math.min(54, width * 0.05));
-  const pulleyX = edgeX + pulleyRadius;
+  const edgeX = width * 0.75;
+  const pulleyRadius = Math.max(30, Math.min(44, width * 0.042));
+  const pulleyX = edgeX + pulleyRadius + 4;
   const pulleyY = tableTopY + pulleyRadius;
   const blockW = Math.max(118, Math.min(162, width * 0.14));
   const blockH = Math.max(66, Math.min(92, height * 0.17));
   const blockBaseX = trackStartX + Math.max(92, width * 0.12);
-  const hangingW = Math.max(96, Math.min(142, width * 0.12));
-  const hangingH = Math.max(96, Math.min(140, height * 0.22));
+  const hangingW = Math.max(88, Math.min(122, width * 0.105));
+  const hangingH = Math.max(84, Math.min(116, height * 0.2));
   const rightTangentY = pulleyY;
   const hangingStartY = rightTangentY + 6;
-  const ppm = Math.max(130, Math.min(220, width / 4.8));
 
   const minBlockX = trackStartX + 6;
   const maxBlockX = edgeX - blockW - 8;
   const minHangingY = hangingStartY;
   const maxHangingY = height - 24 - hangingH;
+
+  const availableHorizontalPx = Math.max(40, maxBlockX - blockBaseX);
+  const availableVerticalPx = Math.max(40, maxHangingY - hangingStartY);
+  const availableTravelPx = Math.min(availableHorizontalPx, availableVerticalPx);
+  const ppm = clamp(availableTravelPx / 3.2, 70, 170);
 
   const travelMinM = Math.max((minBlockX - blockBaseX) / ppm, (minHangingY - hangingStartY) / ppm);
   const travelMaxM = Math.min((maxBlockX - blockBaseX) / ppm, (maxHangingY - hangingStartY) / ppm);
@@ -304,6 +308,7 @@ function drawForceArrow(fromX, fromY, toX, toY, color, label, labelColor = "#123
 }
 
 /**
+ * Draw motion vectors with two parallel lines and one arrowhead.
  * @param {number} y
  * @param {number} centerX
  * @param {number} magnitudePx
@@ -311,39 +316,39 @@ function drawForceArrow(fromX, fromY, toX, toY, color, label, labelColor = "#123
  * @param {string} color
  * @param {string} label
  */
-function drawDoubleIndicator(y, centerX, magnitudePx, direction, color, label) {
-  const length = Math.max(56, magnitudePx);
-  const leftX = centerX - length / 2;
-  const rightX = centerX + length / 2;
-  const head = 10;
+function drawParallelArrow(y, centerX, magnitudePx, direction, color, label) {
+  const length = Math.max(64, magnitudePx);
+  const head = 11;
+  const gap = 4;
+  const startX = direction >= 0 ? centerX - length / 2 : centerX + length / 2;
+  const endX = direction >= 0 ? centerX + length / 2 : centerX - length / 2;
 
   ctx.strokeStyle = color;
   ctx.fillStyle = color;
-  ctx.lineWidth = 3.2;
+  ctx.lineWidth = 2.8;
 
   ctx.beginPath();
-  ctx.moveTo(leftX, y);
-  ctx.lineTo(rightX, y);
+  ctx.moveTo(startX, y - gap);
+  ctx.lineTo(endX, y - gap);
+  ctx.moveTo(startX, y + gap);
+  ctx.lineTo(endX, y + gap);
   ctx.stroke();
 
   ctx.beginPath();
-  ctx.moveTo(leftX, y);
-  ctx.lineTo(leftX + head, y - 6);
-  ctx.lineTo(leftX + head, y + 6);
+  ctx.moveTo(endX, y);
+  if (direction >= 0) {
+    ctx.lineTo(endX - head, y - 7);
+    ctx.lineTo(endX - head, y + 7);
+  } else {
+    ctx.lineTo(endX + head, y - 7);
+    ctx.lineTo(endX + head, y + 7);
+  }
   ctx.closePath();
   ctx.fill();
 
-  ctx.beginPath();
-  ctx.moveTo(rightX, y);
-  ctx.lineTo(rightX - head, y - 6);
-  ctx.lineTo(rightX - head, y + 6);
-  ctx.closePath();
-  ctx.fill();
-
-  const markerX = direction >= 0 ? rightX + 12 : leftX - 20;
+  const markerX = direction >= 0 ? endX + 12 : endX - 26;
   ctx.beginPath();
   ctx.arc(markerX + 8, y, 9, 0, Math.PI * 2);
-  ctx.fillStyle = color;
   ctx.fill();
 
   ctx.fillStyle = "#ffffff";
@@ -408,7 +413,7 @@ function renderScene() {
   ctx.strokeStyle = isDark ? "#98a6b8" : "#5b7084";
   ctx.lineWidth = 5;
   ctx.beginPath();
-  ctx.moveTo(sceneLayout.edgeX + 2, sceneLayout.tableTopY - 86);
+  ctx.moveTo(sceneLayout.edgeX + 2, sceneLayout.tableTopY - 94);
   ctx.lineTo(sceneLayout.edgeX + 2, sceneLayout.tableTopY + 12);
   ctx.stroke();
 
@@ -451,6 +456,14 @@ function renderScene() {
   ctx.lineTo(topTangentX, topTangentY);
   ctx.arc(sceneLayout.pulleyX, sceneLayout.pulleyY, sceneLayout.pulleyRadius, -Math.PI / 2, 0, false);
   ctx.lineTo(rightTangentX, hangY);
+  ctx.stroke();
+
+  // Pulley mount at the edge for clearer visual anchoring.
+  ctx.strokeStyle = isDark ? "#aeb9c8" : "#5b7084";
+  ctx.lineWidth = 4;
+  ctx.beginPath();
+  ctx.moveTo(sceneLayout.edgeX + 2, sceneLayout.tableTopY);
+  ctx.lineTo(sceneLayout.pulleyX - sceneLayout.pulleyRadius, sceneLayout.tableTopY);
   ctx.stroke();
 
   const blockGradient = ctx.createLinearGradient(blockX, blockY, blockX, blockY + sceneLayout.blockH);
@@ -506,7 +519,7 @@ function renderScene() {
     drawForceArrow(hx, hy + 4, hx, hy + (18 + gravityScale), "#d77a49", "Wₕ", labelColor);
   }
 
-  drawDoubleIndicator(
+  drawParallelArrow(
     blockY - 18,
     blockX + sceneLayout.blockW / 2,
     72 + 22 * arrowScale(dynamic.accelerationMps2),
@@ -515,7 +528,7 @@ function renderScene() {
     "a"
   );
 
-  drawDoubleIndicator(
+  drawParallelArrow(
     blockY - 44,
     blockX + sceneLayout.blockW / 2,
     68 + 20 * arrowScale(state.velocityMps),
