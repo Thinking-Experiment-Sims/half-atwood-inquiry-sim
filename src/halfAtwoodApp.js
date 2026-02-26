@@ -28,7 +28,6 @@ function signed(value) {
 const elements = {
   massTable: /** @type {HTMLInputElement} */ (document.querySelector("#massTable")),
   massHanging: /** @type {HTMLInputElement} */ (document.querySelector("#massHanging")),
-  targetDistance: /** @type {HTMLInputElement} */ (document.querySelector("#targetDistance")),
   initialVelocity: /** @type {HTMLInputElement} */ (document.querySelector("#initialVelocity")),
   initialVelocityValue: document.querySelector("#initialVelocityValue"),
   frictionEnabled: /** @type {HTMLInputElement} */ (document.querySelector("#frictionEnabled")),
@@ -51,7 +50,6 @@ const elements = {
   velocityReadout: document.querySelector("#velocityReadout"),
   displacementReadout: document.querySelector("#displacementReadout"),
   timeReadout: document.querySelector("#timeReadout"),
-  targetTimeReadout: document.querySelector("#targetTimeReadout"),
   trialTableBody: document.querySelector("#trialTableBody"),
   discoveryTabBtn: /** @type {HTMLButtonElement} */ (document.querySelector("#discoveryTabBtn")),
   theoryTabBtn: /** @type {HTMLButtonElement} */ (document.querySelector("#theoryTabBtn")),
@@ -64,7 +62,6 @@ const ctx = elements.simCanvas.getContext("2d");
 const state = {
   massTableKg: 2.5,
   massHangingKg: 1.2,
-  targetDistanceM: 2,
   initialVelocityMps: 0,
   frictionEnabled: true,
   mu: 0.2,
@@ -75,7 +72,7 @@ const state = {
   velocityMps: 0,
   lastFrameMs: null,
   nextTrialId: 1,
-  records: /** @type {Array<{id:number,massTableKg:number,massHangingKg:number,mu:number,accel:number,tension:number,timeToTarget:number|null,moved:boolean}>} */ ([])
+  records: /** @type {Array<{id:number,massTableKg:number,massHangingKg:number,mu:number,accel:number,tension:number,moved:boolean}>} */ ([])
 };
 
 let sceneLayout = {
@@ -106,7 +103,6 @@ function setStatus(message, tone = "default") {
 function syncInputsFromState() {
   elements.massTable.value = String(state.massTableKg);
   elements.massHanging.value = String(state.massHangingKg);
-  elements.targetDistance.value = String(state.targetDistanceM);
   elements.initialVelocity.value = String(state.initialVelocityMps);
   elements.frictionEnabled.checked = state.frictionEnabled;
   elements.mu.value = String(state.mu);
@@ -127,7 +123,6 @@ function resetMotion() {
 function readInputsIntoState() {
   state.massTableKg = clamp(Number(elements.massTable.value) || 0, 0.2, 2500);
   state.massHangingKg = clamp(Number(elements.massHanging.value) || 0, 0.1, 500);
-  state.targetDistanceM = clamp(Number(elements.targetDistance.value) || 0, 0.1, 12);
   state.initialVelocityMps = clamp(Number(elements.initialVelocity.value) || 0, -4, 4);
   state.frictionEnabled = elements.frictionEnabled.checked;
   state.mu = clamp(Number(elements.mu.value) || 0, 0, 1);
@@ -148,7 +143,7 @@ function fromRestSolution() {
     mu: state.mu,
     frictionEnabled: state.frictionEnabled,
     gravity: GRAVITY_MPS2,
-    targetDistanceM: state.targetDistanceM
+    targetDistanceM: 1
   });
 }
 
@@ -185,9 +180,6 @@ function updateReadouts() {
   elements.velocityReadout.textContent = `${signed(state.velocityMps)} m/s`;
   elements.displacementReadout.textContent = `${fmt(state.displacementM)} m`;
   elements.timeReadout.textContent = `${fmt(state.timeS)} s`;
-  elements.targetTimeReadout.textContent = rest.timeToTargetS === null
-    ? "No motion from rest"
-    : `${fmt(rest.timeToTargetS)} s`;
 }
 
 function renderTrialTable() {
@@ -196,7 +188,7 @@ function renderTrialTable() {
   }
 
   if (!state.records.length) {
-    elements.trialTableBody.innerHTML = '<tr><td colspan="8">No trials yet.</td></tr>';
+    elements.trialTableBody.innerHTML = '<tr><td colspan="7">No trials yet.</td></tr>';
     return;
   }
 
@@ -209,7 +201,6 @@ function renderTrialTable() {
         <td>${fmt(record.mu, 2)}</td>
         <td>${fmt(record.accel, 3)}</td>
         <td>${fmt(record.tension, 2)}</td>
-        <td>${record.timeToTarget === null ? "--" : fmt(record.timeToTarget, 2)}</td>
         <td>${record.moved ? "Moves" : "Stuck"}</td>
       </tr>`;
     })
@@ -229,19 +220,19 @@ function arrowScale(value) {
  * @param {number} height
  */
 function getLayout(width, height) {
-  const tableTopY = height * 0.5;
+  const tableTopY = height * 0.42;
   const trackStartX = Math.max(42, width * 0.04);
   const edgeX = width * 0.75;
   const pulleyRadius = Math.max(30, Math.min(44, width * 0.042));
   const pulleyX = edgeX + pulleyRadius + 4;
   const pulleyY = tableTopY + pulleyRadius;
-  const blockW = Math.max(118, Math.min(162, width * 0.14));
-  const blockH = Math.max(66, Math.min(92, height * 0.17));
+  const blockW = Math.max(118, Math.min(150, width * 0.13));
+  const blockH = Math.max(58, Math.min(78, height * 0.14));
   const blockBaseX = trackStartX + 24;
-  const hangingW = Math.max(88, Math.min(122, width * 0.105));
-  const hangingH = Math.max(84, Math.min(116, height * 0.2));
+  const hangingW = Math.max(82, Math.min(112, width * 0.095));
+  const hangingH = Math.max(72, Math.min(98, height * 0.17));
   const rightTangentY = pulleyY;
-  const hangingStartY = rightTangentY + Math.max(42, hangingH * 0.35);
+  const hangingStartY = rightTangentY + 6;
 
   const minBlockX = trackStartX + 6;
   const maxBlockX = edgeX - blockW - 8;
@@ -254,7 +245,7 @@ function getLayout(width, height) {
   const ppm = clamp(availableTravelPx / 3.2, 70, 170);
 
   const travelMinM = 0;
-  const travelMaxM = Math.min((maxBlockX - blockBaseX) / ppm, (maxHangingY - hangingStartY) / ppm);
+  const travelMaxM = Math.max(0.2, Math.min((maxBlockX - blockBaseX) / ppm, (maxHangingY - hangingStartY) / ppm));
 
   return {
     tableTopY,
@@ -510,10 +501,10 @@ function renderScene() {
     const frictionDx = dynamic.frictionSignedN > 0 ? 1 : -1;
 
     drawFbdPanel({
-      x: 16,
-      y: 54,
-      w: 240,
-      h: 190,
+      x: 14,
+      y: 12,
+      w: 230,
+      h: 132,
       title: "FBD: Table Block",
       isDark,
       vectors: [
@@ -525,10 +516,10 @@ function renderScene() {
     });
 
     drawFbdPanel({
-      x: width - 256,
-      y: 54,
-      w: 240,
-      h: 190,
+      x: width - 244,
+      y: 12,
+      w: 230,
+      h: 132,
       title: "FBD: Hanging Mass",
       isDark,
       vectors: [
@@ -648,7 +639,6 @@ function recordTrial() {
     mu: state.frictionEnabled ? state.mu : 0,
     accel: rest.accelerationMps2,
     tension: rest.tensionN,
-    timeToTarget: rest.timeToTargetS,
     moved: rest.moved
   });
   state.nextTrialId += 1;
@@ -674,7 +664,6 @@ function applyPreset(preset) {
     state.frictionEnabled = false;
     state.mu = 0.2;
     state.initialVelocityMps = 0;
-    state.targetDistanceM = 2;
     setStatus("Loaded frictionless baseline.");
   } else if (preset === "packet") {
     state.massTableKg = 2.5;
@@ -682,7 +671,6 @@ function applyPreset(preset) {
     state.frictionEnabled = true;
     state.mu = 0.2;
     state.initialVelocityMps = 0;
-    state.targetDistanceM = 2;
     setStatus("Loaded packet-style friction scenario.");
   } else {
     state.massTableKg = 1000;
@@ -690,7 +678,6 @@ function applyPreset(preset) {
     state.frictionEnabled = false;
     state.mu = 0.2;
     state.initialVelocityMps = 0;
-    state.targetDistanceM = 10;
     setStatus("Loaded car + rock analog (packet-style Atwood context).");
   }
 
@@ -733,7 +720,6 @@ function bindEvents() {
   const inputIds = [
     "massTable",
     "massHanging",
-    "targetDistance",
     "initialVelocity",
     "frictionEnabled",
     "mu",
