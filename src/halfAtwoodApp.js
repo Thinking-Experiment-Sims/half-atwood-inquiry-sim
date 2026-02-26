@@ -229,20 +229,20 @@ function arrowScale(value) {
  * @param {number} height
  */
 function getLayout(width, height) {
-  const tableTopY = height * 0.48;
-  const trackStartX = 60;
-  const edgeX = width * 0.72;
-  const pulleyRadius = Math.max(24, Math.min(36, width * 0.034));
+  const tableTopY = height * 0.56;
+  const trackStartX = Math.max(42, width * 0.04);
+  const edgeX = width * 0.73;
+  const pulleyRadius = Math.max(34, Math.min(54, width * 0.05));
   const pulleyX = edgeX + pulleyRadius;
   const pulleyY = tableTopY + pulleyRadius;
-  const blockW = 88;
-  const blockH = 48;
-  const blockBaseX = trackStartX + 96;
-  const hangingW = 74;
-  const hangingH = 66;
+  const blockW = Math.max(118, Math.min(162, width * 0.14));
+  const blockH = Math.max(66, Math.min(92, height * 0.17));
+  const blockBaseX = trackStartX + Math.max(92, width * 0.12);
+  const hangingW = Math.max(96, Math.min(142, width * 0.12));
+  const hangingH = Math.max(96, Math.min(140, height * 0.22));
   const rightTangentY = pulleyY;
   const hangingStartY = rightTangentY + 6;
-  const ppm = Math.max(90, Math.min(150, width / 7.2));
+  const ppm = Math.max(130, Math.min(220, width / 4.8));
 
   const minBlockX = trackStartX + 6;
   const maxBlockX = edgeX - blockW - 8;
@@ -279,7 +279,7 @@ function getLayout(width, height) {
  * @param {string} color
  * @param {string} label
  */
-function drawForceArrow(fromX, fromY, toX, toY, color, label) {
+function drawForceArrow(fromX, fromY, toX, toY, color, label, labelColor = "#123140") {
   const headLength = 8;
   const angle = Math.atan2(toY - fromY, toX - fromX);
   ctx.strokeStyle = color;
@@ -298,8 +298,8 @@ function drawForceArrow(fromX, fromY, toX, toY, color, label) {
   ctx.closePath();
   ctx.fill();
 
-  ctx.font = "12px IBM Plex Sans";
-  ctx.fillStyle = "#123140";
+  ctx.font = "600 14px IBM Plex Sans";
+  ctx.fillStyle = labelColor;
   ctx.fillText(label, toX + 6, toY - 4);
 }
 
@@ -381,6 +381,7 @@ function renderScene() {
   const hangX = rightTangentX - sceneLayout.hangingW / 2;
   const hangY = sceneLayout.hangingStartY + xPx;
   const isDark = document.documentElement.getAttribute("data-theme") === "dark";
+  const labelColor = isDark ? "#eef2f9" : "#123140";
 
   ctx.clearRect(0, 0, width, height);
 
@@ -395,7 +396,7 @@ function renderScene() {
   tableGradient.addColorStop(1, isDark ? "#443828" : "#e0c3a2");
 
   ctx.fillStyle = tableGradient;
-  ctx.fillRect(sceneLayout.trackStartX - 30, sceneLayout.tableTopY + 8, sceneLayout.edgeX - sceneLayout.trackStartX + 35, 46);
+  ctx.fillRect(sceneLayout.trackStartX - 30, sceneLayout.tableTopY + 8, sceneLayout.edgeX - sceneLayout.trackStartX + 35, 58);
 
   ctx.strokeStyle = isDark ? "#9b7c58" : "#6b5540";
   ctx.lineWidth = 3;
@@ -407,7 +408,7 @@ function renderScene() {
   ctx.strokeStyle = isDark ? "#98a6b8" : "#5b7084";
   ctx.lineWidth = 5;
   ctx.beginPath();
-  ctx.moveTo(sceneLayout.edgeX + 2, sceneLayout.tableTopY - 56);
+  ctx.moveTo(sceneLayout.edgeX + 2, sceneLayout.tableTopY - 86);
   ctx.lineTo(sceneLayout.edgeX + 2, sceneLayout.tableTopY + 12);
   ctx.stroke();
 
@@ -470,8 +471,8 @@ function renderScene() {
   ctx.lineWidth = 2;
   ctx.strokeRect(hangX, hangY, sceneLayout.hangingW, sceneLayout.hangingH);
 
-  ctx.font = "700 14px IBM Plex Sans";
-  ctx.fillStyle = isDark ? "#eef2f9" : "#123140";
+  ctx.font = "700 20px IBM Plex Sans";
+  ctx.fillStyle = labelColor;
   ctx.fillText("mₜ", blockX + sceneLayout.blockW / 2 - 10, blockY + sceneLayout.blockH / 2 + 5);
   ctx.fillText("mₕ", hangX + sceneLayout.hangingW / 2 - 10, hangY + sceneLayout.hangingH / 2 + 5);
 
@@ -484,9 +485,9 @@ function renderScene() {
     const hy = hangY + sceneLayout.hangingH / 2;
     const gravityScale = 36;
 
-    drawForceArrow(bx, by + 2, bx, by + gravityScale, "#d77a49", "Wₜ");
-    drawForceArrow(bx, by - 2, bx, by - gravityScale, "#1e8cc0", "N");
-    drawForceArrow(bx + 4, by, bx + 12 + 22 * arrowScale(dynamic.tensionN / 20), by, "#36617a", "T");
+    drawForceArrow(bx, by + 2, bx, by + gravityScale, "#d77a49", "Wₜ", labelColor);
+    drawForceArrow(bx, by - 2, bx, by - gravityScale, "#1e8cc0", "N", labelColor);
+    drawForceArrow(bx + 4, by, bx + 12 + 22 * arrowScale(dynamic.tensionN / 20), by, "#36617a", "T", labelColor);
 
     if (state.frictionEnabled && Math.abs(dynamic.frictionSignedN) > 1e-3) {
       const frictionDir = Math.sign(dynamic.frictionSignedN);
@@ -496,12 +497,13 @@ function renderScene() {
         bx + frictionDir * (16 + 22 * arrowScale(dynamic.frictionMagnitudeN / 20)),
         by + 16,
         "#d08d2a",
-        "f"
+        "f",
+        labelColor
       );
     }
 
-    drawForceArrow(hx, hy - 2, hx, hy - (12 + 20 * arrowScale(dynamic.tensionN / 20)), "#36617a", "T");
-    drawForceArrow(hx, hy + 4, hx, hy + (18 + gravityScale), "#d77a49", "Wₕ");
+    drawForceArrow(hx, hy - 2, hx, hy - (12 + 20 * arrowScale(dynamic.tensionN / 20)), "#36617a", "T", labelColor);
+    drawForceArrow(hx, hy + 4, hx, hy + (18 + gravityScale), "#d77a49", "Wₕ", labelColor);
   }
 
   drawDoubleIndicator(
