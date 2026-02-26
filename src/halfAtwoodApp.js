@@ -499,11 +499,16 @@ function renderScene() {
   if (state.showForces) {
     const frictionMag = state.frictionEnabled ? dynamic.frictionMagnitudeN : 0;
     const frictionDx = dynamic.frictionSignedN > 0 ? 1 : -1;
+    const lowerFbdY = sceneLayout.tableTopY + 96;
+    const tableFbdX = 14;
+    const tableFbdW = 260;
+    const hangingFbdW = 240;
+    const fbdGap = 16;
 
     drawFbdPanel({
-      x: 14,
-      y: sceneLayout.tableTopY + 96,
-      w: 260,
+      x: tableFbdX,
+      y: lowerFbdY,
+      w: tableFbdW,
       h: 150,
       title: "FBD: Table Block",
       isDark,
@@ -516,9 +521,9 @@ function renderScene() {
     });
 
     drawFbdPanel({
-      x: width - 254,
-      y: 12,
-      w: 240,
+      x: tableFbdX + tableFbdW + fbdGap,
+      y: lowerFbdY,
+      w: hangingFbdW,
       h: 132,
       title: "FBD: Hanging Mass",
       isDark,
