@@ -229,7 +229,7 @@ function arrowScale(value) {
  * @param {number} height
  */
 function getLayout(width, height) {
-  const tableTopY = height * 0.42;
+  const tableTopY = height * 0.5;
   const trackStartX = Math.max(42, width * 0.04);
   const edgeX = width * 0.75;
   const pulleyRadius = Math.max(30, Math.min(44, width * 0.042));
@@ -237,11 +237,11 @@ function getLayout(width, height) {
   const pulleyY = tableTopY + pulleyRadius;
   const blockW = Math.max(118, Math.min(162, width * 0.14));
   const blockH = Math.max(66, Math.min(92, height * 0.17));
-  const blockBaseX = trackStartX + Math.max(92, width * 0.12);
+  const blockBaseX = trackStartX + 24;
   const hangingW = Math.max(88, Math.min(122, width * 0.105));
   const hangingH = Math.max(84, Math.min(116, height * 0.2));
   const rightTangentY = pulleyY;
-  const hangingStartY = rightTangentY + 6;
+  const hangingStartY = rightTangentY + Math.max(42, hangingH * 0.35);
 
   const minBlockX = trackStartX + 6;
   const maxBlockX = edgeX - blockW - 8;
@@ -253,7 +253,7 @@ function getLayout(width, height) {
   const availableTravelPx = Math.min(availableHorizontalPx, availableVerticalPx);
   const ppm = clamp(availableTravelPx / 3.2, 70, 170);
 
-  const travelMinM = Math.max((minBlockX - blockBaseX) / ppm, (minHangingY - hangingStartY) / ppm);
+  const travelMinM = 0;
   const travelMaxM = Math.min((maxBlockX - blockBaseX) / ppm, (maxHangingY - hangingStartY) / ppm);
 
   return {
@@ -281,14 +281,13 @@ function getLayout(width, height) {
  * @param {number} toX
  * @param {number} toY
  * @param {string} color
- * @param {string} label
  */
-function drawForceArrow(fromX, fromY, toX, toY, color, label, labelColor = "#123140") {
-  const headLength = 8;
+function drawArrow(fromX, fromY, toX, toY, color) {
+  const headLength = 10;
   const angle = Math.atan2(toY - fromY, toX - fromX);
   ctx.strokeStyle = color;
   ctx.fillStyle = color;
-  ctx.lineWidth = 3.2;
+  ctx.lineWidth = 3.6;
 
   ctx.beginPath();
   ctx.moveTo(fromX, fromY);
@@ -301,10 +300,74 @@ function drawForceArrow(fromX, fromY, toX, toY, color, label, labelColor = "#123
   ctx.lineTo(toX - headLength * Math.cos(angle + Math.PI / 7), toY - headLength * Math.sin(angle + Math.PI / 7));
   ctx.closePath();
   ctx.fill();
+}
 
-  ctx.font = "700 16px IBM Plex Sans";
-  ctx.fillStyle = labelColor;
-  ctx.fillText(label, toX + 6, toY - 4);
+/**
+ * Draws labels like F with a true subscript letter, without underscore syntax.
+ * @param {number} x
+ * @param {number} y
+ * @param {string} subscript
+ * @param {string} color
+ */
+function drawForceLabel(x, y, subscript, color) {
+  ctx.fillStyle = color;
+  ctx.font = "700 18px IBM Plex Sans";
+  ctx.fillText("F", x, y);
+  const mainWidth = ctx.measureText("F").width;
+  ctx.font = "700 12px IBM Plex Sans";
+  ctx.fillText(subscript, x + mainWidth + 1, y + 5);
+}
+
+/**
+ * @param {{
+ * x:number,
+ * y:number,
+ * w:number,
+ * h:number,
+ * title:string,
+ * vectors:Array<{dx:number,dy:number,color:string,sub:string,magnitudeN:number}>,
+ * isDark:boolean
+ * }} panel
+ */
+function drawFbdPanel(panel) {
+  const panelBg = panel.isDark ? "rgba(27,35,48,0.9)" : "rgba(247,252,255,0.95)";
+  const panelBorder = panel.isDark ? "rgba(229,204,143,0.28)" : "rgba(94,128,142,0.35)";
+  const textColor = panel.isDark ? "#eef2f9" : "#123140";
+
+  ctx.fillStyle = panelBg;
+  ctx.strokeStyle = panelBorder;
+  ctx.lineWidth = 1.6;
+  ctx.beginPath();
+  ctx.roundRect(panel.x, panel.y, panel.w, panel.h, 10);
+  ctx.fill();
+  ctx.stroke();
+
+  ctx.fillStyle = textColor;
+  ctx.font = "700 15px IBM Plex Sans";
+  ctx.fillText(panel.title, panel.x + 10, panel.y + 22);
+
+  const cx = panel.x + panel.w * 0.5;
+  const cy = panel.y + panel.h * 0.56;
+
+  ctx.fillStyle = panel.isDark ? "#9aaabd" : "#d3e9f2";
+  ctx.strokeStyle = panel.isDark ? "#d6deea" : "#4c5f72";
+  ctx.lineWidth = 2;
+  ctx.beginPath();
+  ctx.roundRect(cx - 18, cy - 18, 36, 36, 6);
+  ctx.fill();
+  ctx.stroke();
+
+  for (const vector of panel.vectors) {
+    if (Math.abs(vector.magnitudeN) < 1e-6) {
+      continue;
+    }
+    const length = 18 + 28 * arrowScale(vector.magnitudeN / 20);
+    const mag = Math.max(12, length);
+    const toX = cx + vector.dx * mag;
+    const toY = cy + vector.dy * mag;
+    drawArrow(cx, cy, toX, toY, vector.color);
+    drawForceLabel(toX + 6, toY - 2, vector.sub, textColor);
+  }
 }
 
 function resizeCanvas() {
@@ -443,37 +506,42 @@ function renderScene() {
   const dynamic = dynamicSolution();
 
   if (state.showForces) {
-    const bx = blockX + sceneLayout.blockW / 2;
-    const by = blockY + sceneLayout.blockH / 2;
-    const hx = hangX + sceneLayout.hangingW / 2;
-    const hy = hangY + sceneLayout.hangingH / 2;
-    const gravityScale = 56;
+    const frictionMag = state.frictionEnabled ? dynamic.frictionMagnitudeN : 0;
+    const frictionDx = dynamic.frictionSignedN > 0 ? 1 : -1;
 
-    drawForceArrow(bx, by + 2, bx, by + gravityScale, "#f28f54", "F₍g₎", labelColor);
-    drawForceArrow(bx, by - 2, bx, by - gravityScale, "#25a3d8", "Fₙ", labelColor);
-    drawForceArrow(bx + 4, by, bx + 16 + 34 * arrowScale(dynamic.tensionN / 20), by, "#4b7f9d", "Fₜ", labelColor);
+    drawFbdPanel({
+      x: 16,
+      y: 54,
+      w: 240,
+      h: 190,
+      title: "FBD: Table Block",
+      isDark,
+      vectors: [
+        { dx: 0, dy: -1, color: "#25a3d8", sub: "N", magnitudeN: state.massTableKg * GRAVITY_MPS2 },
+        { dx: 0, dy: 1, color: "#f28f54", sub: "g", magnitudeN: state.massTableKg * GRAVITY_MPS2 },
+        { dx: 1, dy: 0, color: "#4b7f9d", sub: "t", magnitudeN: dynamic.tensionN },
+        { dx: frictionDx, dy: 0, color: "#f3b340", sub: "f", magnitudeN: frictionMag }
+      ]
+    });
 
-    if (state.frictionEnabled && Math.abs(dynamic.frictionSignedN) > 1e-3) {
-      const frictionDir = Math.sign(dynamic.frictionSignedN);
-      drawForceArrow(
-        bx,
-        by + 16,
-        bx + frictionDir * (18 + 32 * arrowScale(dynamic.frictionMagnitudeN / 20)),
-        by + 16,
-        "#f3b340",
-        "F₍f₎",
-        labelColor
-      );
-    }
-
-    drawForceArrow(hx, hy - 2, hx, hy - (14 + 28 * arrowScale(dynamic.tensionN / 20)), "#4b7f9d", "Fₜ", labelColor);
-    drawForceArrow(hx, hy + 4, hx, hy + (20 + gravityScale), "#f28f54", "F₍g₎", labelColor);
+    drawFbdPanel({
+      x: width - 256,
+      y: 54,
+      w: 240,
+      h: 190,
+      title: "FBD: Hanging Mass",
+      isDark,
+      vectors: [
+        { dx: 0, dy: -1, color: "#4b7f9d", sub: "t", magnitudeN: dynamic.tensionN },
+        { dx: 0, dy: 1, color: "#f28f54", sub: "g", magnitudeN: state.massHangingKg * GRAVITY_MPS2 }
+      ]
+    });
   }
 
   ctx.font = "12px IBM Plex Sans";
   ctx.fillStyle = isDark ? "#d8dfeb" : "#2b4b58";
-  ctx.fillText(`x = ${fmt(state.displacementM)} m`, 18, 26);
-  ctx.fillText(`t = ${fmt(state.timeS)} s`, 18, 44);
+  ctx.fillText(`x = ${fmt(state.displacementM)} m`, 18, height - 20);
+  ctx.fillText(`t = ${fmt(state.timeS)} s`, 110, height - 20);
 }
 
 /**
@@ -498,15 +566,26 @@ function animate(timestampMs) {
     state.running = false;
     setStatus("Static friction holds the system at rest under current settings.", "warn");
   } else {
+    const previousDisplacement = state.displacementM;
     state.velocityMps += dynamic.accelerationMps2 * dt;
     state.displacementM += state.velocityMps * dt;
+    if (state.displacementM < sceneLayout.travelMinM) {
+      state.displacementM = sceneLayout.travelMinM;
+      if (state.velocityMps < 0) {
+        state.velocityMps = 0;
+      }
+    }
     state.timeS += dt;
 
-    if (state.displacementM >= sceneLayout.travelMaxM || state.displacementM <= sceneLayout.travelMinM) {
+    if (state.displacementM >= sceneLayout.travelMaxM) {
       state.displacementM = clamp(state.displacementM, sceneLayout.travelMinM, sceneLayout.travelMaxM);
       state.running = false;
       state.velocityMps = 0;
-      setStatus("Motion reached a physical boundary. Press Reset for another run.", "warn");
+      if (Math.abs(state.displacementM - previousDisplacement) > 1e-4 || state.timeS > 0.05) {
+        setStatus("Motion reached a physical boundary. Press Reset for another run.", "warn");
+      } else {
+        setStatus("Simulation paused at limit. Press Reset to restart.", "warn");
+      }
     }
   }
 
