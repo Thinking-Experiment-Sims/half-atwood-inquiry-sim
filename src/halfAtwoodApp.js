@@ -288,7 +288,7 @@ function drawForceArrow(fromX, fromY, toX, toY, color, label, labelColor = "#123
   const angle = Math.atan2(toY - fromY, toX - fromX);
   ctx.strokeStyle = color;
   ctx.fillStyle = color;
-  ctx.lineWidth = 2.2;
+  ctx.lineWidth = 3.2;
 
   ctx.beginPath();
   ctx.moveTo(fromX, fromY);
@@ -302,58 +302,9 @@ function drawForceArrow(fromX, fromY, toX, toY, color, label, labelColor = "#123
   ctx.closePath();
   ctx.fill();
 
-  ctx.font = "600 14px IBM Plex Sans";
+  ctx.font = "700 16px IBM Plex Sans";
   ctx.fillStyle = labelColor;
   ctx.fillText(label, toX + 6, toY - 4);
-}
-
-/**
- * Draw motion vectors with two parallel lines and one arrowhead.
- * @param {number} y
- * @param {number} centerX
- * @param {number} magnitudePx
- * @param {number} direction
- * @param {string} color
- * @param {string} label
- */
-function drawParallelArrow(y, centerX, magnitudePx, direction, color, label) {
-  const length = Math.max(64, magnitudePx);
-  const head = 11;
-  const gap = 4;
-  const startX = direction >= 0 ? centerX - length / 2 : centerX + length / 2;
-  const endX = direction >= 0 ? centerX + length / 2 : centerX - length / 2;
-
-  ctx.strokeStyle = color;
-  ctx.fillStyle = color;
-  ctx.lineWidth = 2.8;
-
-  ctx.beginPath();
-  ctx.moveTo(startX, y - gap);
-  ctx.lineTo(endX, y - gap);
-  ctx.moveTo(startX, y + gap);
-  ctx.lineTo(endX, y + gap);
-  ctx.stroke();
-
-  ctx.beginPath();
-  ctx.moveTo(endX, y);
-  if (direction >= 0) {
-    ctx.lineTo(endX - head, y - 7);
-    ctx.lineTo(endX - head, y + 7);
-  } else {
-    ctx.lineTo(endX + head, y - 7);
-    ctx.lineTo(endX + head, y + 7);
-  }
-  ctx.closePath();
-  ctx.fill();
-
-  const markerX = direction >= 0 ? endX + 12 : endX - 26;
-  ctx.beginPath();
-  ctx.arc(markerX + 8, y, 9, 0, Math.PI * 2);
-  ctx.fill();
-
-  ctx.fillStyle = "#ffffff";
-  ctx.font = "700 12px IBM Plex Sans";
-  ctx.fillText(label, markerX + 5, y + 4);
 }
 
 function resizeCanvas() {
@@ -496,46 +447,28 @@ function renderScene() {
     const by = blockY + sceneLayout.blockH / 2;
     const hx = hangX + sceneLayout.hangingW / 2;
     const hy = hangY + sceneLayout.hangingH / 2;
-    const gravityScale = 36;
+    const gravityScale = 56;
 
-    drawForceArrow(bx, by + 2, bx, by + gravityScale, "#d77a49", "Wₜ", labelColor);
-    drawForceArrow(bx, by - 2, bx, by - gravityScale, "#1e8cc0", "N", labelColor);
-    drawForceArrow(bx + 4, by, bx + 12 + 22 * arrowScale(dynamic.tensionN / 20), by, "#36617a", "T", labelColor);
+    drawForceArrow(bx, by + 2, bx, by + gravityScale, "#f28f54", "F₍g₎", labelColor);
+    drawForceArrow(bx, by - 2, bx, by - gravityScale, "#25a3d8", "Fₙ", labelColor);
+    drawForceArrow(bx + 4, by, bx + 16 + 34 * arrowScale(dynamic.tensionN / 20), by, "#4b7f9d", "Fₜ", labelColor);
 
     if (state.frictionEnabled && Math.abs(dynamic.frictionSignedN) > 1e-3) {
       const frictionDir = Math.sign(dynamic.frictionSignedN);
       drawForceArrow(
         bx,
         by + 16,
-        bx + frictionDir * (16 + 22 * arrowScale(dynamic.frictionMagnitudeN / 20)),
+        bx + frictionDir * (18 + 32 * arrowScale(dynamic.frictionMagnitudeN / 20)),
         by + 16,
-        "#d08d2a",
-        "f",
+        "#f3b340",
+        "F₍f₎",
         labelColor
       );
     }
 
-    drawForceArrow(hx, hy - 2, hx, hy - (12 + 20 * arrowScale(dynamic.tensionN / 20)), "#36617a", "T", labelColor);
-    drawForceArrow(hx, hy + 4, hx, hy + (18 + gravityScale), "#d77a49", "Wₕ", labelColor);
+    drawForceArrow(hx, hy - 2, hx, hy - (14 + 28 * arrowScale(dynamic.tensionN / 20)), "#4b7f9d", "Fₜ", labelColor);
+    drawForceArrow(hx, hy + 4, hx, hy + (20 + gravityScale), "#f28f54", "F₍g₎", labelColor);
   }
-
-  drawParallelArrow(
-    blockY - 18,
-    blockX + sceneLayout.blockW / 2,
-    72 + 22 * arrowScale(dynamic.accelerationMps2),
-    dynamic.accelerationMps2 >= 0 ? 1 : -1,
-    "#d84f3d",
-    "a"
-  );
-
-  drawParallelArrow(
-    blockY - 44,
-    blockX + sceneLayout.blockW / 2,
-    68 + 20 * arrowScale(state.velocityMps),
-    state.velocityMps >= 0 ? 1 : -1,
-    "#0f7e9b",
-    "v"
-  );
 
   ctx.font = "12px IBM Plex Sans";
   ctx.fillStyle = isDark ? "#d8dfeb" : "#2b4b58";
@@ -591,6 +524,15 @@ function startRun() {
   }
 
   const rest = fromRestSolution();
+  const dynamic = dynamicSolution();
+
+  const atMaxAndPushingPositive = state.displacementM >= sceneLayout.travelMaxM - 1e-6 && dynamic.accelerationMps2 >= 0;
+  const atMinAndPushingNegative = state.displacementM <= sceneLayout.travelMinM + 1e-6 && dynamic.accelerationMps2 <= 0;
+  if (atMaxAndPushingPositive || atMinAndPushingNegative) {
+    state.displacementM = 0;
+    state.timeS = 0;
+    state.velocityMps = state.initialVelocityMps;
+  }
 
   if (Math.abs(state.velocityMps) <= VELOCITY_EPSILON && !rest.moved) {
     setStatus("No motion starts from rest: drive force is not greater than friction.", "warn");
