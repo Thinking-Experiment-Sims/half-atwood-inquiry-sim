@@ -220,19 +220,19 @@ function arrowScale(value) {
  * @param {number} height
  */
 function getLayout(width, height) {
-  const tableTopY = height * 0.42;
+  const tableTopY = height * 0.34;
   const trackStartX = Math.max(42, width * 0.04);
-  const edgeX = width * 0.75;
-  const pulleyRadius = Math.max(30, Math.min(44, width * 0.042));
+  const edgeX = width * 0.78;
+  const pulleyRadius = Math.max(28, Math.min(38, width * 0.038));
   const pulleyX = edgeX + pulleyRadius + 4;
   const pulleyY = tableTopY + pulleyRadius;
-  const blockW = Math.max(118, Math.min(150, width * 0.13));
-  const blockH = Math.max(58, Math.min(78, height * 0.14));
+  const blockW = Math.max(112, Math.min(146, width * 0.125));
+  const blockH = Math.max(54, Math.min(72, height * 0.13));
   const blockBaseX = trackStartX + 24;
-  const hangingW = Math.max(82, Math.min(112, width * 0.095));
-  const hangingH = Math.max(72, Math.min(98, height * 0.17));
+  const hangingW = Math.max(74, Math.min(100, width * 0.085));
+  const hangingH = Math.max(70, Math.min(94, height * 0.16));
   const rightTangentY = pulleyY;
-  const hangingStartY = rightTangentY + 6;
+  const hangingStartY = rightTangentY + 10;
 
   const minBlockX = trackStartX + 6;
   const maxBlockX = edgeX - blockW - 8;
@@ -242,7 +242,7 @@ function getLayout(width, height) {
   const availableHorizontalPx = Math.max(40, maxBlockX - blockBaseX);
   const availableVerticalPx = Math.max(40, maxHangingY - hangingStartY);
   const availableTravelPx = Math.min(availableHorizontalPx, availableVerticalPx);
-  const ppm = clamp(availableTravelPx / 3.2, 70, 170);
+  const ppm = clamp(availableTravelPx / 2.1, 90, 220);
 
   const travelMinM = 0;
   const travelMaxM = Math.max(0.2, Math.min((maxBlockX - blockBaseX) / ppm, (maxHangingY - hangingStartY) / ppm));
@@ -401,12 +401,12 @@ function renderScene() {
   ctx.fillStyle = sky;
   ctx.fillRect(0, 0, width, height);
 
-  const tableGradient = ctx.createLinearGradient(0, sceneLayout.tableTopY + 8, 0, sceneLayout.tableTopY + 70);
+  const tableGradient = ctx.createLinearGradient(0, sceneLayout.tableTopY + 8, 0, sceneLayout.tableTopY + 72);
   tableGradient.addColorStop(0, isDark ? "#5a4b3b" : "#f2dbc0");
   tableGradient.addColorStop(1, isDark ? "#443828" : "#e0c3a2");
 
   ctx.fillStyle = tableGradient;
-  ctx.fillRect(sceneLayout.trackStartX - 30, sceneLayout.tableTopY + 8, sceneLayout.edgeX - sceneLayout.trackStartX + 35, 58);
+  ctx.fillRect(sceneLayout.trackStartX - 30, sceneLayout.tableTopY + 8, sceneLayout.edgeX - sceneLayout.trackStartX + 35, 54);
 
   ctx.strokeStyle = isDark ? "#9b7c58" : "#6b5540";
   ctx.lineWidth = 3;
@@ -418,7 +418,7 @@ function renderScene() {
   ctx.strokeStyle = isDark ? "#98a6b8" : "#5b7084";
   ctx.lineWidth = 5;
   ctx.beginPath();
-  ctx.moveTo(sceneLayout.edgeX + 2, sceneLayout.tableTopY - 94);
+  ctx.moveTo(sceneLayout.edgeX + 2, sceneLayout.tableTopY - 86);
   ctx.lineTo(sceneLayout.edgeX + 2, sceneLayout.tableTopY + 12);
   ctx.stroke();
 
@@ -502,9 +502,9 @@ function renderScene() {
 
     drawFbdPanel({
       x: 14,
-      y: 12,
-      w: 230,
-      h: 132,
+      y: sceneLayout.tableTopY + 96,
+      w: 260,
+      h: 150,
       title: "FBD: Table Block",
       isDark,
       vectors: [
@@ -516,9 +516,9 @@ function renderScene() {
     });
 
     drawFbdPanel({
-      x: width - 244,
+      x: width - 254,
       y: 12,
-      w: 230,
+      w: 240,
       h: 132,
       title: "FBD: Hanging Mass",
       isDark,
