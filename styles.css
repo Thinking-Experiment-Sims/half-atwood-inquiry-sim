@@ -1,6 +1,7 @@
 @import url("https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600;700&display=swap");
 
 :root {
+
   --bg-950: #e9f4fb;
   --bg-900: #fff4dd;
   --bg-800: #ffffff;
@@ -24,6 +25,7 @@
   --warn: #9a5d00;
   --border: #c8dbe3;
   --shadow: 0 12px 24px rgba(12, 54, 68, 0.12);
+
 }
 
 
@@ -39,13 +41,10 @@ body {
 }
 
 body {
-  font-family: "IBM Plex Sans", "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
-  color: var(--ink);
+  font-family: "Inter", "IBM Plex Sans", sans-serif;
+  color: var(--text-100);
+  background: #e9f4fb;
   line-height: 1.45;
-  background:
-    radial-gradient(1200px 700px at 8% 2%, rgba(19, 143, 176, 0.18), transparent 62%),
-    radial-gradient(900px 600px at 92% 98%, rgba(220, 132, 32, 0.18), transparent 66%),
-    linear-gradient(165deg, var(--bg-top), var(--bg-bottom));
 }
 
 .bg-grid {
@@ -137,13 +136,17 @@ li {
 .panel {
   border: 1px solid var(--border);
   border-radius: 12px;
+  padding: 1rem;
   background: var(--surface);
   box-shadow: 0 6px 16px rgba(12, 54, 68, 0.08);
-  padding: 1rem;
 }
 
-[data-theme="dark"] .panel { box-shadow: 0 6px 16px rgba(12, 54, 68, 0.08); border-radius: 12px;
+[data-theme="dark"] .panel {
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 1rem;
   background: var(--surface);
+  box-shadow: 0 6px 16px rgba(12, 54, 68, 0.08);
 }
 
 .narrow {
@@ -233,13 +236,8 @@ button {
   background: linear-gradient(160deg, #0d839f, #0b5f77);
   color: #ffffff;
   font-weight: 700;
-
-  border: 1px solid #9dbac5;
-  border-radius: 8px;
-  background: #f6fbfd;
-  color: var(--ink);
-  font-weight: 700;
-  padding: 0.53rem 0.75rem;
+  border: 1px solid #0a5d74;
+  padding: 0.58rem 0.82rem;
   cursor: pointer;
 }
 
@@ -248,10 +246,9 @@ button {
   background: linear-gradient(160deg, #0d839f, #0b5f77);
   color: #ffffff;
   font-weight: 700;
-
-  background: #1e2430;
-  color: #eef2f9;
-  border-color: rgba(229, 204, 143, 0.28);
+  border: 1px solid #0a5d74;
+  padding: 0.58rem 0.82rem;
+  cursor: pointer;
 }
 
 button.primary {
