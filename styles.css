@@ -1,6 +1,17 @@
 @import url("https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600;700&display=swap");
 
 :root {
+  --bg-950: #e9f4fb;
+  --bg-900: #fff4dd;
+  --bg-800: #ffffff;
+  --text-100: #123140;
+  --text-300: #4b6570;
+  --gold-500: #0f7e9b;
+  --gold-400: #0b5f77;
+  --surface: rgba(255, 255, 255, 0.96);
+  --border: #c8dbe3;
+  --shadow-lg: 0 12px 24px rgba(12, 54, 68, 0.12);
+
   --bg-top: #e9f4fb;
   --bg-bottom: #fff4dd;
   --card: #ffffff;
@@ -15,20 +26,7 @@
   --shadow: 0 12px 24px rgba(12, 54, 68, 0.12);
 }
 
-[data-theme="dark"] {
-  --bg-top: #11141b;
-  --bg-bottom: #090b0f;
-  --card: #11141b;
-  --ink: #eef2f9;
-  --muted: #c9d1df;
-  --accent: #c8a24a;
-  --accent-strong: #d8b767;
-  --warm: #e5cc8f;
-  --ok: #d8b767;
-  --warn: #f2c383;
-  --border: rgba(229, 204, 143, 0.28);
-  --shadow: 0 14px 28px rgba(0, 0, 0, 0.35);
-}
+
 
 * {
   box-sizing: border-box;
@@ -139,13 +137,13 @@ li {
 .panel {
   border: 1px solid var(--border);
   border-radius: 12px;
-  background: var(--card);
-  box-shadow: var(--shadow);
+  background: var(--surface);
+  box-shadow: 0 6px 16px rgba(12, 54, 68, 0.08);
   padding: 1rem;
 }
 
-[data-theme="dark"] .panel {
-  background: linear-gradient(165deg, #11141b, #0b0f16);
+[data-theme="dark"] .panel { box-shadow: 0 6px 16px rgba(12, 54, 68, 0.08); border-radius: 12px;
+  background: var(--surface);
 }
 
 .narrow {
@@ -231,6 +229,11 @@ input[type="checkbox"] {
 }
 
 button {
+  border-radius: 10px;
+  background: linear-gradient(160deg, #0d839f, #0b5f77);
+  color: #ffffff;
+  font-weight: 700;
+
   border: 1px solid #9dbac5;
   border-radius: 8px;
   background: #f6fbfd;
@@ -241,6 +244,11 @@ button {
 }
 
 [data-theme="dark"] button {
+  border-radius: 10px;
+  background: linear-gradient(160deg, #0d839f, #0b5f77);
+  color: #ffffff;
+  font-weight: 700;
+
   background: #1e2430;
   color: #eef2f9;
   border-color: rgba(229, 204, 143, 0.28);
