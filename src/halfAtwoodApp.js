@@ -39,7 +39,6 @@ const elements = {
   resetBtn: /** @type {HTMLButtonElement} */ (document.querySelector("#resetBtn")),
   recordBtn: /** @type {HTMLButtonElement} */ (document.querySelector("#recordBtn")),
   clearBtn: /** @type {HTMLButtonElement} */ (document.querySelector("#clearBtn")),
-  themeToggle: /** @type {HTMLButtonElement} */ (document.querySelector("#themeToggle")),
   statusText: document.querySelector("#statusText"),
   simCanvas: /** @type {HTMLCanvasElement} */ (document.querySelector("#simCanvas")),
   accelReadout: document.querySelector("#accelReadout"),
@@ -79,17 +78,6 @@ let sceneLayout = {
   travelMinM: -1,
   travelMaxM: 1
 };
-
-function applyTheme(theme) {
-  document.documentElement.setAttribute("data-theme", theme);
-  elements.themeToggle.textContent = theme === "light" ? "Dark mode" : "Light mode";
-}
-
-function initTheme() {
-  const saved = window.localStorage.getItem("te-theme");
-  const theme = saved === "dark" || saved === "light" ? saved : "light";
-  applyTheme(theme);
-}
 
 /**
  * @param {string} message
@@ -316,14 +304,13 @@ function drawForceLabel(x, y, subscript, color) {
  * w:number,
  * h:number,
  * title:string,
- * vectors:Array<{dx:number,dy:number,color:string,sub:string,magnitudeN:number}>,
- * isDark:boolean
+ * vectors:Array<{dx:number,dy:number,color:string,sub:string,magnitudeN:number}>
  * }} panel
  */
 function drawFbdPanel(panel) {
-  const panelBg = panel.isDark ? "rgba(27,35,48,0.9)" : "rgba(247,252,255,0.95)";
-  const panelBorder = panel.isDark ? "rgba(229,204,143,0.28)" : "rgba(94,128,142,0.35)";
-  const textColor = panel.isDark ? "#eef2f9" : "#123140";
+  const panelBg = "rgba(247,252,255,0.95)";
+  const panelBorder = "rgba(94,128,142,0.35)";
+  const textColor = "#123140";
 
   ctx.fillStyle = panelBg;
   ctx.strokeStyle = panelBorder;
@@ -340,8 +327,8 @@ function drawFbdPanel(panel) {
   const cx = panel.x + panel.w * 0.5;
   const cy = panel.y + panel.h * 0.56;
 
-  ctx.fillStyle = panel.isDark ? "#9aaabd" : "#d3e9f2";
-  ctx.strokeStyle = panel.isDark ? "#d6deea" : "#4c5f72";
+  ctx.fillStyle = "#d3e9f2";
+  ctx.strokeStyle = "#4c5f72";
   ctx.lineWidth = 2;
   ctx.beginPath();
   ctx.roundRect(cx - 18, cy - 18, 36, 36, 6);
@@ -390,32 +377,31 @@ function renderScene() {
   const rightTangentX = sceneLayout.pulleyX + sceneLayout.pulleyRadius;
   const hangX = rightTangentX - sceneLayout.hangingW / 2;
   const hangY = sceneLayout.hangingStartY + xPx;
-  const isDark = document.documentElement.getAttribute("data-theme") === "dark";
-  const labelColor = isDark ? "#eef2f9" : "#123140";
+  const labelColor = "#123140";
 
   ctx.clearRect(0, 0, width, height);
 
   const sky = ctx.createLinearGradient(0, 0, 0, height);
-  sky.addColorStop(0, isDark ? "#1a202c" : "#f8fcff");
-  sky.addColorStop(1, isDark ? "#0d1118" : "#eef6fb");
+  sky.addColorStop(0, "#f8fcff");
+  sky.addColorStop(1, "#eef6fb");
   ctx.fillStyle = sky;
   ctx.fillRect(0, 0, width, height);
 
   const tableGradient = ctx.createLinearGradient(0, sceneLayout.tableTopY + 8, 0, sceneLayout.tableTopY + 72);
-  tableGradient.addColorStop(0, isDark ? "#5a4b3b" : "#f2dbc0");
-  tableGradient.addColorStop(1, isDark ? "#443828" : "#e0c3a2");
+  tableGradient.addColorStop(0, "#f2dbc0");
+  tableGradient.addColorStop(1, "#e0c3a2");
 
   ctx.fillStyle = tableGradient;
   ctx.fillRect(sceneLayout.trackStartX - 30, sceneLayout.tableTopY + 8, sceneLayout.edgeX - sceneLayout.trackStartX + 35, 54);
 
-  ctx.strokeStyle = isDark ? "#9b7c58" : "#6b5540";
+  ctx.strokeStyle = "#6b5540";
   ctx.lineWidth = 3;
   ctx.beginPath();
   ctx.moveTo(sceneLayout.trackStartX - 15, sceneLayout.tableTopY + 8);
   ctx.lineTo(sceneLayout.edgeX + 3, sceneLayout.tableTopY + 8);
   ctx.stroke();
 
-  ctx.strokeStyle = isDark ? "#98a6b8" : "#5b7084";
+  ctx.strokeStyle = "#5b7084";
   ctx.lineWidth = 5;
   ctx.beginPath();
   ctx.moveTo(sceneLayout.edgeX + 2, sceneLayout.tableTopY - 86);
@@ -425,17 +411,17 @@ function renderScene() {
   ctx.save();
   ctx.translate(sceneLayout.pulleyX, sceneLayout.pulleyY);
   ctx.rotate((state.displacementM * sceneLayout.ppm) / (sceneLayout.pulleyRadius || 1));
-  ctx.fillStyle = isDark ? "#7d899a" : "#9aaabd";
+  ctx.fillStyle = "#9aaabd";
   ctx.beginPath();
   ctx.arc(0, 0, sceneLayout.pulleyRadius, 0, Math.PI * 2);
   ctx.fill();
-  ctx.strokeStyle = isDark ? "#c0cad7" : "#3c4f62";
+  ctx.strokeStyle = "#3c4f62";
   ctx.lineWidth = 2;
   ctx.stroke();
 
   for (let i = 0; i < 6; i += 1) {
     ctx.rotate(Math.PI / 3);
-    ctx.strokeStyle = isDark ? "#b8c3d2" : "#5b6f84";
+    ctx.strokeStyle = "#5b6f84";
     ctx.lineWidth = 1.6;
     ctx.beginPath();
     ctx.moveTo(0, 0);
@@ -443,7 +429,7 @@ function renderScene() {
     ctx.stroke();
   }
 
-  ctx.fillStyle = isDark ? "#d0d7e3" : "#2e3f50";
+  ctx.fillStyle = "#2e3f50";
   ctx.beginPath();
   ctx.arc(0, 0, 7, 0, Math.PI * 2);
   ctx.fill();
@@ -454,7 +440,7 @@ function renderScene() {
   const topTangentX = sceneLayout.edgeX;
   const topTangentY = sceneLayout.tableTopY;
 
-  ctx.strokeStyle = isDark ? "#d6deea" : "#4c5f72";
+  ctx.strokeStyle = "#4c5f72";
   ctx.lineWidth = 2.8;
   ctx.beginPath();
   ctx.moveTo(blockAttachX, blockAttachY);
@@ -464,7 +450,7 @@ function renderScene() {
   ctx.stroke();
 
   // Pulley mount at the edge for clearer visual anchoring.
-  ctx.strokeStyle = isDark ? "#aeb9c8" : "#5b7084";
+  ctx.strokeStyle = "#5b7084";
   ctx.lineWidth = 4;
   ctx.beginPath();
   ctx.moveTo(sceneLayout.edgeX + 2, sceneLayout.tableTopY);
@@ -511,7 +497,6 @@ function renderScene() {
       w: tableFbdW,
       h: 150,
       title: "FBD: Table Block",
-      isDark,
       vectors: [
         { dx: 0, dy: -1, color: "#25a3d8", sub: "N", magnitudeN: state.massTableKg * GRAVITY_MPS2 },
         { dx: 0, dy: 1, color: "#f28f54", sub: "g", magnitudeN: state.massTableKg * GRAVITY_MPS2 },
@@ -526,7 +511,6 @@ function renderScene() {
       w: hangingFbdW,
       h: 132,
       title: "FBD: Hanging Mass",
-      isDark,
       vectors: [
         { dx: 0, dy: -1, color: "#4b7f9d", sub: "t", magnitudeN: dynamic.tensionN },
         { dx: 0, dy: 1, color: "#f28f54", sub: "g", magnitudeN: state.massHangingKg * GRAVITY_MPS2 }
@@ -535,7 +519,7 @@ function renderScene() {
   }
 
   ctx.font = "12px IBM Plex Sans";
-  ctx.fillStyle = isDark ? "#d8dfeb" : "#2b4b58";
+  ctx.fillStyle = "#2b4b58";
   ctx.fillText(`x = ${fmt(state.displacementM)} m`, 18, height - 20);
   ctx.fillText(`t = ${fmt(state.timeS)} s`, 110, height - 20);
 }
@@ -754,13 +738,6 @@ function bindEvents() {
   });
 
   elements.clearBtn.addEventListener("click", clearTrials);
-  elements.themeToggle.addEventListener("click", () => {
-    const current = document.documentElement.getAttribute("data-theme") === "dark" ? "dark" : "light";
-    const next = current === "dark" ? "light" : "dark";
-    applyTheme(next);
-    window.localStorage.setItem("te-theme", next);
-    renderScene();
-  });
 
   document.querySelectorAll("[data-preset]").forEach((button) => {
     button.addEventListener("click", () => {
@@ -780,7 +757,6 @@ function bindEvents() {
 }
 
 function init() {
-  initTheme();
   syncInputsFromState();
   resetMotion();
   bindEvents();
